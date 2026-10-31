@@ -1,0 +1,26 @@
+# Node
+node_modules/
+dist/
+*.log
+
+# Cloudflare / wrangler
+.wrangler/
+.dev.vars
+
+# Apple push keys
+*.p8
+
+# Xcode / XcodeGen
+watch/*.xcodeproj/
+watch/*.xcworkspace/
+DerivedData/
+build/
+xcuserdata/
+*.xcuserstate
+
+# macOS
+.DS_Store
+
+# Your own signing, relay and Cloudflare settings
+watch/Signing.local.xcconfig
+relay/wrangler.local.toml

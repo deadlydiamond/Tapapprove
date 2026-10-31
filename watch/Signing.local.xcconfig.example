@@ -1,0 +1,11 @@
+// Copy this file to Signing.local.xcconfig and fill it in.
+
+DEVELOPMENT_TEAM = ABCDE12345
+TAPAPPROVE_BUNDLE_ID = com.yourname.tapapprove
+
+// Two slashes start a comment in this format, so put $() between them.
+TAPAPPROVE_RELAY_URL = https:/$()/tapapprove-relay.your-subdomain.workers.dev
+
+// Without a paid Apple Developer account, push is not available. Use this line instead.
+// Requests then appear only while the app is open, and the install lasts 7 days.
+// TAPAPPROVE_ENTITLEMENTS = Tapapprove/Tapapprove-NoPush.entitlements

@@ -1,0 +1,26 @@
+{
+  "name": "tapapprove",
+  "version": "0.1.0",
+  "description": "Approve Claude Code permission prompts from your Apple Watch",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "apple-watch",
+    "hooks",
+    "permissions"
+  ],
+  "type": "module",
+  "bin": {
+    "tapapprove": "bin/tapapprove.mjs"
+  },
+  "files": [
+    "bin",
+    "lib"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

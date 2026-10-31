@@ -1,0 +1,81 @@
+name: Tapapprove
+options:
+  createIntermediateGroups: true
+  deploymentTarget:
+    watchOS: "10.0"
+configFiles:
+  Debug: Signing.xcconfig
+  Release: Signing.xcconfig
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    CODE_SIGN_STYLE: Automatic
+targets:
+  Tapapprove:
+    type: application
+    platform: watchOS
+    sources:
+      - path: Tapapprove
+        excludes:
+          - "Info*.plist"
+    dependencies:
+      - target: TapapproveWidget
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(TAPAPPROVE_BUNDLE_ID)
+        INFOPLIST_FILE: Tapapprove/Info.plist
+        CODE_SIGN_ENTITLEMENTS: $(TAPAPPROVE_ENTITLEMENTS)
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Also colors the app's name on its notifications.
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SKIP_INSTALL: NO
+      configs:
+        # Debug alone may talk to http://localhost, so Release can never ship that exception.
+        Debug:
+          INFOPLIST_FILE: Tapapprove/Info-Debug.plist
+  TapapproveWidget:
+    type: app-extension
+    platform: watchOS
+    sources:
+      - path: TapapproveWidget
+      # The widget shares the app's brand color.
+      - path: Tapapprove/Assets.xcassets
+    info:
+      path: TapapproveWidget/Info.plist
+      properties:
+        CFBundleDisplayName: Tapapprove
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(TAPAPPROVE_BUNDLE_ID).widget
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SKIP_INSTALL: YES
+  TapapproveUITests:
+    type: bundle.ui-testing
+    platform: watchOS
+    sources:
+      - path: TapapproveUITests
+    dependencies:
+      - target: Tapapprove
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(TAPAPPROVE_BUNDLE_ID).uitests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  Tapapprove:
+    build:
+      targets:
+        Tapapprove: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - TapapproveUITests

@@ -1,0 +1,9 @@
+// Defaults for anyone building from source. Your own team, bundle ID and relay go in
+// Signing.local.xcconfig, which git ignores. Copy Signing.local.xcconfig.example to start.
+
+DEVELOPMENT_TEAM =
+TAPAPPROVE_BUNDLE_ID = com.example.tapapprove
+TAPAPPROVE_ENTITLEMENTS = Tapapprove/Tapapprove.entitlements
+TAPAPPROVE_RELAY_URL =
+
+#include? "Signing.local.xcconfig"

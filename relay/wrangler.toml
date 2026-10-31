@@ -1,0 +1,34 @@
+# Works as is for `wrangler dev` and the tests. To deploy your own relay, copy this file to
+# wrangler.local.toml (git ignores it), fill in the two values marked below, and deploy with:
+#   npx wrangler deploy -c wrangler.local.toml
+
+name = "tapapprove-relay"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+
+[vars]
+# Your watch app's bundle ID.
+APNS_TOPIC = "com.example.tapapprove"
+
+# Holds each pairing: its tokens, device token and pending requests.
+[[durable_objects.bindings]]
+name = "CHANNEL"
+class_name = "ChannelDO"
+
+# SQLite-backed, because the Workers free plan only offers this storage type.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ChannelDO"]
+
+# Stops code guessing and mass channel creation. Counted per client address.
+[[ratelimits]]
+name = "PAIR_RATE_LIMITER"
+namespace_id = "1001"
+simple = { limit = 60, period = 60 }
+
+# Maps a short pairing code to its channel until the code is claimed.
+# `wrangler dev` ignores this id. Create yours with:
+#   npx wrangler kv namespace create PAIR_CODES
+[[kv_namespaces]]
+binding = "PAIR_CODES"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
