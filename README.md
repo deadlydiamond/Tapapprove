@@ -95,9 +95,33 @@ Only when Claude Code would have asked you. It does not fire when:
 - Claude Code treats the action as safe on its own, such as `ls`
 - the session runs in `auto` or `bypassPermissions` mode, or in `acceptEdits` for file commands like `touch` and `truncate`
 
-An `ask` rule beats an `allow` rule, so `"ask": ["Bash(git push:*)"]` sends just those commands to the watch even with a broad allow list. `AskUserQuestion` and `ExitPlanMode` stay on the computer, because they need an answer a button cannot give.
+An `ask` rule beats an `allow` rule and also applies in `auto` mode, so `"ask": ["Bash(git push:*)"]` sends just those commands to the watch even with a broad allow list. `AskUserQuestion` and `ExitPlanMode` stay on the computer, because they need an answer a button cannot give.
 
 This works the same in the terminal and in the Claude panel in VS Code or Cursor.
+
+### Use it in all your sessions
+
+`pair` adds the hook to `~/.claude/settings.json`, so every session you start afterwards can reach the watch. Start a new session to pick it up.
+
+If you allow most commands or work in `auto` mode, Claude Code rarely asks, so the watch stays quiet. Choose what reaches your wrist with `ask` rules in the same file:
+
+```json
+{
+  "permissions": {
+    "ask": ["Bash(git push:*)", "Bash(rm -rf:*)"]
+  }
+}
+```
+
+To check it, start a new session and paste this prompt. The folder does not exist, so nothing is deleted:
+
+```text
+Use the Bash tool to run exactly this command: rm -rf /tmp/tapapprove-try
+```
+
+The request should appear on your watch while the dialog stays open on the computer. If nothing arrives, run `npx tapapprove status` to check the pairing, the hook and push.
+
+With the hook global, the summaries of those prompts from all your projects go through your relay. In a `claude -p` run there is no dialog to fall back on, so a prompt the watch does not answer within the wait (90 seconds by default) is denied.
 
 ## Safety rules
 
