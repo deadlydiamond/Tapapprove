@@ -19,6 +19,19 @@ final class EndToEndTests: XCTestCase {
         let code = app.staticTexts["pairCode"]
         XCTAssertTrue(code.waitForExistence(timeout: 60), "No pairing code. Is the relay running?")
         screenshot("1-pairing")
+
+        // A sample request works before pairing, so anyone can try the app without a computer.
+        let sampleButton = app.buttons["sampleButton"]
+        scrollUntilVisible(sampleButton, app: app, swipes: 5)
+        sampleButton.tap()
+        let sampleYes = app.buttons["approveButton"]
+        XCTAssertTrue(sampleYes.waitForExistence(timeout: 10), "The sample request never appeared")
+        waitUntilEnabled(sampleYes)
+        screenshot("1b-sample-request")
+        sampleYes.tap()
+        confirmOutcome(app, screenshot: "1c-sample-approved")
+        XCTAssertTrue(code.waitForExistence(timeout: 15), "The sample should return to the pairing code")
+
         try code.label.write(to: handoff.appending(path: "code"), atomically: true, encoding: .utf8)
 
         let idle = app.staticTexts["idleTitle"]
@@ -73,7 +86,6 @@ final class EndToEndTests: XCTestCase {
         let quickDeny = app.buttons["quickDenyButton"]
         waitUntilEnabled(quickDeny)
         XCTAssertFalse(approve.exists, "Yes must not exist until the end of the text is reached")
-        XCTAssertFalse(app.staticTexts["truncatedNotice"].exists, "A whole request must not say it is too long")
         screenshot("12-near-limit-request")
         quickDeny.tap()
         confirmOutcome(app, screenshot: "13-denied-long")

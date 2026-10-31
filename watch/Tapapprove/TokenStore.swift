@@ -1,40 +1,68 @@
 import Foundation
 import Security
 
-/// Keeps the pairing token in the Keychain. It must stay readable after first unlock,
-/// because a notification action can run while the app is in the background.
+/// Keeps the pairing token and keys in the Keychain. They must stay readable after first
+/// unlock, because a notification can arrive while the app is in the background, and the
+/// notification extension reads the same items.
 enum TokenStore {
-    private static let account = "watchToken"
+    private static let tokenAccount = "watchToken"
+    private static let keysAccount = "channelKeys"
 
-    private static var query: [String: Any] {
+    private static var service: String {
+        Bundle.main.object(forInfoDictionaryKey: "TapapproveAppBundleID") as? String
+            ?? Bundle.main.bundleIdentifier
+            ?? "tapapprove"
+    }
+
+    private static func query(_ account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Bundle.main.bundleIdentifier ?? "tapapprove",
+            kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
     }
 
-    static func load() -> String? {
-        var lookup = query
+    private static func read(_ account: String) -> Data? {
+        var lookup = query(account)
         lookup[kSecReturnData as String] = true
         lookup[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
-        guard SecItemCopyMatching(lookup as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data
-        else { return nil }
-        return String(data: data, encoding: .utf8)
+        guard SecItemCopyMatching(lookup as CFDictionary, &item) == errSecSuccess else { return nil }
+        return item as? Data
     }
 
     @discardableResult
-    static func save(_ token: String) -> Bool {
-        delete()
-        var attributes = query
-        attributes[kSecValueData as String] = Data(token.utf8)
+    private static func write(_ data: Data, account: String) -> Bool {
+        SecItemDelete(query(account) as CFDictionary)
+        var attributes = query(account)
+        attributes[kSecValueData as String] = data
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         return SecItemAdd(attributes as CFDictionary, nil) == errSecSuccess
     }
 
+    static func load() -> String? {
+        read(tokenAccount).flatMap { String(data: $0, encoding: .utf8) }
+    }
+
+    static func loadKeys() -> ChannelKeys? {
+        read(keysAccount).flatMap { try? JSONDecoder().decode(ChannelKeys.self, from: $0) }
+    }
+
+    /// Saves both or neither, since a token without its keys could not open anything.
+    @discardableResult
+    static func save(token: String, keys: ChannelKeys) -> Bool {
+        guard let encoded = try? JSONEncoder().encode(keys),
+              write(encoded, account: keysAccount),
+              write(Data(token.utf8), account: tokenAccount)
+        else {
+            delete()
+            return false
+        }
+        return true
+    }
+
     static func delete() {
-        SecItemDelete(query as CFDictionary)
+        SecItemDelete(query(tokenAccount) as CFDictionary)
+        SecItemDelete(query(keysAccount) as CFDictionary)
     }
 }

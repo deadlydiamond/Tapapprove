@@ -21,12 +21,14 @@
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
+	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>TapapproveAppBundleID</key>
+	<string>$(TAPAPPROVE_BUNDLE_ID)</string>
 	<key>TapapproveRelayURL</key>
 	<string>$(TAPAPPROVE_RELAY_URL)</string>
 	<key>WKApplication</key>

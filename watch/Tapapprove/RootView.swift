@@ -28,19 +28,31 @@ struct RootView: View {
 
     @ViewBuilder
     private var content: some View {
+        // The next request waits for the confirmation to end, so its safety delay starts
+        // only once it can be seen, and a tap aimed at the last answer cannot reach it.
+        if let outcome = model.outcome {
+            OutcomeView(outcome: outcome)
+        } else if let sample = model.sample {
+            RequestView(request: sample, queued: 0) { answer in
+                Task { await model.answerSample(answer) }
+            }
+        } else {
+            screen
+        }
+    }
+
+    @ViewBuilder
+    private var screen: some View {
         switch model.phase {
         case .loading:
             ProgressView()
+                .tint(.white)
         case .pairing(let code, let expiresAt):
-            PairingView(code: code, expiresAt: expiresAt)
+            PairingView(code: code, expiresAt: expiresAt) { model.showSample() }
         case .pairingFailed:
             PairingFailedView { model.retryPairing() }
-        case .paired(let computerName):
-            // The next request waits for the confirmation to end, so its safety delay starts
-            // only once it can be seen, and a tap aimed at the last answer cannot reach it.
-            if let outcome = model.outcome {
-                OutcomeView(outcome: outcome)
-            } else if let request = model.requests.first {
+        case .paired:
+            if let request = model.requests.first {
                 RequestView(
                     request: request,
                     queued: model.requests.count - 1,
@@ -51,9 +63,11 @@ struct RootView: View {
                 // A new identity resets the view's state, which re-arms the safety checks.
                 .id(request.id)
             } else {
-                IdleView(computerName: computerName, isOffline: model.isOffline) {
-                    Task { await model.unpair() }
-                }
+                IdleView(
+                    isOffline: model.isOffline,
+                    onSample: { model.showSample() },
+                    onUnpair: { Task { await model.unpair() } }
+                )
             }
         }
     }

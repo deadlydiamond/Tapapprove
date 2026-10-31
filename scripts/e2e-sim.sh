@@ -46,24 +46,27 @@ done
 [[ -s $HANDOFF/code ]] || fail "the watch never showed a pairing code"
 CODE=$(<"$HANDOFF/code")
 echo "Pairing with code $CODE"
-cli pair "$CODE" --relay "$RELAY" --name "E2E Mac" || fail "pair"
+cli pair "$CODE" --relay "$RELAY" || fail "pair"
 cli status || fail "status"
 
-LONG_COMMAND="echo start; $(printf 'echo this-line-makes-the-command-long; %.0s' {1..30})echo end"
+echo "A relay forging requests: the watch must not show any of them"
+node "$REPO/scripts/forge-requests.mjs" "$TEMP_HOME/.tapapprove/config.json" || fail "could not post the forged requests"
+
+LONG_COMMAND=$'set -euo pipefail\nnpm ci\nnpm run lint\nnpm run test -- --coverage\nnpm run build\n'$(for service in api web worker billing search notifications; do printf 'docker build -t registry.example.com/%s:latest ./services/%s\ndocker push registry.example.com/%s:latest\nkubectl rollout restart deployment/%s\nkubectl rollout status deployment/%s --timeout=120s\n' $service $service $service $service $service; done)$'\necho deployed'
 VERY_LONG_COMMAND="echo start; $(printf 'echo this-line-makes-the-command-long; %.0s' {1..200})echo end"
 NEAR_LIMIT_COMMAND="echo start; $(printf 'echo this-line-makes-the-command-long; %.0s' {1..2450})echo end"
 echo "Long request: the watch must scroll to the end, then approve"
-cli test --timeout 120 --command "$LONG_COMMAND"
+cli test --timeout 120 --project my-app --command "$LONG_COMMAND"
 [[ $? == 0 ]] || fail "the long request should have been approved (exit 0)"
 
 echo "Short request with a session answer: the watch allows it for this session"
-OUTPUT=$(cli test --timeout 120 --command 'ls -la' --session-label 'Yes, allow ls for this session')
+OUTPUT=$(cli test --timeout 120 --project my-app --command 'npm run build' --session-label 'Yes, allow npm run * for this session')
 [[ $? == 0 ]] || fail "the session answer should have approved (exit 0)"
 [[ $OUTPUT == *"for this session"* ]] || fail "the computer never heard which answer was chosen: $OUTPUT"
 echo "$OUTPUT"
 
 echo "Short request: the watch denies"
-cli test --timeout 120 --command 'ls -la'
+cli test --timeout 120 --project my-app --command 'git push origin main' --session-label 'Yes, allow git push for this session'
 [[ $? == 1 ]] || fail "the short request should have been denied (exit 1)"
 
 echo "Very long request: it arrives whole, the watch scrolls to the end, then approves"

@@ -3,11 +3,12 @@
 // the choice to Claude Code's own prompt. A failure must never become an allow.
 
 import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import { configDir, DEFAULT_WAIT_SECONDS, loadConfig } from './config.mjs';
-import { describeTool } from './describe.mjs';
+import { describeTool, projectName } from './describe.mjs';
 import { sessionOptions } from './options.mjs';
 import { relayClient, waitForDecision } from './relay.mjs';
+import { openAnswer, sealRequest } from './request.mjs';
 
 const MAX_LOG_BYTES = 1_000_000;
 // These tools ask the user to answer or review something a watch button cannot express.
@@ -66,6 +67,10 @@ export async function runHook(stdinText) {
 
   const config = loadConfig();
   if (!config) return;
+  if (!config.keys) {
+    log(event, tool, 'skipped:pair-again', startedAt);
+    return;
+  }
   if (NEEDS_THE_COMPUTER.has(tool)) {
     log(event, tool, 'skipped', startedAt);
     return;
@@ -90,21 +95,23 @@ export async function runHook(stdinText) {
       log(event, tool, 'skipped:too-long', startedAt);
       return;
     }
-    const created = await client.createRequest({
+    const sealed = sealRequest(config.keys, {
       tool,
-      ...summary,
+      title: summary.title,
+      detail: summary.detail,
       options: options.map((option) => option.label),
-      project: input.cwd ? basename(input.cwd) : undefined,
+      project: projectName(input.cwd),
       ttlSeconds: waitSeconds,
     });
-    requestId = created.id;
-    outcome = await waitForDecision(client, requestId, waitSeconds);
+    await client.createRequest(sealed);
+    requestId = sealed.id;
+    outcome = openAnswer(config.keys, requestId, await waitForDecision(client, requestId, waitSeconds));
   } catch (error) {
     log(event, tool, `error:${error.status ?? 'network'}`, startedAt);
     return;
   }
 
-  if (outcome.status === 'timeout') await client.cancel(requestId).catch(() => {});
+  if (outcome.status === 'timeout' || outcome.status === 'forged') await client.cancel(requestId).catch(() => {});
   log(event, tool, outcome.status, startedAt);
   const decision = permissionDecision(outcome, options);
   if (decision) process.stdout.write(`${JSON.stringify(decision)}\n`);

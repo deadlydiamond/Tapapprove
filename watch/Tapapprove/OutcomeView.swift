@@ -7,11 +7,12 @@ struct OutcomeView: View {
         VStack(spacing: 8) {
             if outcome.isSending {
                 ProgressView()
+                    .tint(.white)
             } else {
                 Image(systemName: outcome.symbolName)
                     .font(.largeTitle)
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(outcome.answer.decision == .allow ? Color.green : Color.secondary)
+                    .foregroundStyle(.primary)
                     .transition(.opacity)
                     .accessibilityHidden(true)
             }

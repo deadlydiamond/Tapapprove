@@ -1,5 +1,8 @@
-// Turns a tool call into the text shown on the watch. This text leaves the machine,
-// so secrets are masked here, before anything is sent to the relay.
+// Turns a tool call into the text shown on the watch. Claude Code runs the original, so this
+// must say exactly what runs, and nothing is masked: a password in a command shows too. The
+// text is sealed before it leaves this computer and opens only on the person's own watch.
+
+import { basename } from 'node:path';
 
 // Approving means reading the end of the text, so anything longer never reaches the watch.
 export const MAX_DETAIL = 100_000;
@@ -17,35 +20,25 @@ const TITLES = {
   Agent: 'Start agent',
 };
 
-const SECRET_WORDS = 'token|secret|password|passwd|pwd|api[_-]?key|access[_-]?key|private[_-]?key|credential';
+// Characters that hide text, reorder it, move the cursor or look like blank space. Tabs and line
+// breaks stay, and plain spaces, whose long runs the notification check deals with.
+const HIDDEN_TEXT = /[[\p{C}--[\t\n\r]]\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800[\p{Zs}--[ ]]]|\r(?!\n)/gv;
+const ADDRESS = /[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>]+/gi;
+const NON_ASCII = /[^\x00-\x7F]/gu;
+const MAX_PROJECT = 40;
 
-// Masking changes what the person reads while Claude Code runs the original, so it must
-// never hide anything that executes. A value holding any of this is shown as it is, even
-// though that can reveal a secret: a wrong approval costs more than a shown password.
-const ACTIVE_TEXT = /[$`;|&<>()\n]/;
+const writtenOut = (char) => `<U+${char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}>`;
 
-const unlessActive = (match, value, masked) => (ACTIVE_TEXT.test(value) ? match : masked);
+/** What the person reads must be what runs, so these are written out instead of taking effect. */
+export function showHidden(text) {
+  // A look-alike letter in an address could pass for a site the person trusts.
+  return text.replace(HIDDEN_TEXT, writtenOut).replace(ADDRESS, (address) => address.replace(NON_ASCII, writtenOut));
+}
 
-const SECRET_PATTERNS = [
-  [/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 ***'],
-  [
-    new RegExp(`("[A-Za-z0-9_-]*(?:${SECRET_WORDS})[A-Za-z0-9_-]*"\\s*:\\s*)("(?:[^"\\\\]|\\\\.)*")`, 'gi'),
-    (match, key, value) => unlessActive(match, value, `${key}"***"`),
-  ],
-  [
-    new RegExp(`\\b([A-Za-z0-9_]*(?:${SECRET_WORDS})[A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\\S+)`, 'gi'),
-    (match, name, value) => unlessActive(match, value, `${name}=***`),
-  ],
-  [
-    new RegExp(`(--[A-Za-z0-9-]*(?:${SECRET_WORDS})[A-Za-z0-9-]*)(=|\\s+)(\\S+)`, 'gi'),
-    (match, flag, separator, value) => unlessActive(match, value, `${flag}${separator}***`),
-  ],
-  [/\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|glpat-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})\b/g, '***'],
-  [/(:\/\/[^\s:/@]+:)([^\s/@]+)@/g, (match, prefix, value) => unlessActive(match, value, `${prefix}***@`)],
-];
-
-export function mask(text) {
-  return SECRET_PATTERNS.reduce((masked, [pattern, replacement]) => masked.replace(pattern, replacement), text);
+/** A folder can be named anything, and this sits on one line beside the request. */
+export function projectName(path) {
+  if (!path) return undefined;
+  return showHidden(basename(path).replace(/\s+/g, ' ').trim()).slice(0, MAX_PROJECT);
 }
 
 function asText(value) {
@@ -65,20 +58,26 @@ function rawDetail(tool, input) {
       const command = asText(input.command);
       return input.dangerouslyDisableSandbox ? `Runs outside the sandbox\n\n${command}` : command;
     }
-    case 'Edit':
+    case 'Edit': {
+      const replace = input.replace_all ? 'Replace every match of' : 'Replace';
+      return `${asText(input.file_path)}\n\n${replace}:\n${asText(input.old_string)}\n\nWith:\n${asText(input.new_string)}`.trim();
+    }
     case 'MultiEdit':
-      return `${asText(input.file_path)}\n\n${asText(input.new_string ?? input.edits)}`.trim();
+      return `${asText(input.file_path)}\n\n${asText(input.edits)}`.trim();
     case 'Write':
       return `${asText(input.file_path)}\n\n${asText(input.content)}`.trim();
     case 'NotebookEdit':
-      return `${asText(input.notebook_path)}\n\n${asText(input.new_source)}`.trim();
+      return `${asText(input.notebook_path)}\n\n${asText(input.edit_mode ?? 'replace')} cell ${asText(input.cell_id)}\n\n${asText(input.new_source)}`.trim();
     case 'WebFetch':
       return asText(input.url);
     case 'WebSearch':
       return asText(input.query);
     case 'Task':
-    case 'Agent':
-      return `${asText(input.description)}\n\n${asText(input.prompt)}`.trim();
+    case 'Agent': {
+      const { description, prompt, ...others } = input;
+      const rest = Object.keys(others).length ? `\n\n${asText(others)}` : '';
+      return `${asText(description)}\n\n${asText(prompt)}${rest}`.trim();
+    }
     default:
       return asText(input);
   }
@@ -87,11 +86,10 @@ function rawDetail(tool, input) {
 export function describeTool(name, input) {
   const tool = String(name ?? 'Unknown');
   const args = input && typeof input === 'object' ? input : {};
-  // Mask before cutting, so the cut can never split a secret out of a pattern's reach.
-  const detail = mask(rawDetail(tool, args));
+  const detail = showHidden(rawDetail(tool, args));
   const hidden = detail.length - MAX_DETAIL;
   return {
-    title: titleFor(tool).slice(0, MAX_TITLE),
+    title: showHidden(titleFor(tool)).slice(0, MAX_TITLE),
     detail: hidden > 0 ? `${detail.slice(0, MAX_DETAIL)}\n… ${hidden} more characters not shown` : detail,
     truncated: hidden > 0,
   };

@@ -13,10 +13,14 @@ struct RequestHeader: View {
                     .accessibilityAddTraits(.isHeader)
             } icon: {
                 Image(systemName: request.symbolName)
-                    .foregroundStyle(.tint)
+                    .foregroundStyle(.secondary)
             }
             HStack(spacing: 4) {
-                if let project = request.project {
+                if request.isSample {
+                    // The icon sets it apart from a project, which could have any name.
+                    Label("Sample: nothing runs", systemImage: "sparkles")
+                        .lineLimit(1)
+                } else if let project = request.project {
                     Text(project)
                         .lineLimit(1)
                 }

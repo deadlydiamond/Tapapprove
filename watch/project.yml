@@ -24,6 +24,7 @@ targets:
           - "Info*.plist"
     dependencies:
       - target: TapapproveWidget
+      - target: TapapproveNotify
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(TAPAPPROVE_BUNDLE_ID)
@@ -57,6 +58,44 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: $(TAPAPPROVE_BUNDLE_ID).widget
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         SKIP_INSTALL: YES
+  TapapproveNotify:
+    type: app-extension
+    platform: watchOS
+    sources:
+      - path: TapapproveNotify
+        excludes:
+          - "Info.plist"
+      # Opens the sealed preview with the keys the app saved.
+      - path: Tapapprove/ChannelCrypto.swift
+      - path: Tapapprove/SealedPreview.swift
+      - path: Tapapprove/TokenStore.swift
+      - path: Tapapprove/SharedTypes.swift
+    info:
+      path: TapapproveNotify/Info.plist
+      properties:
+        CFBundleDisplayName: Tapapprove
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        TapapproveAppBundleID: $(TAPAPPROVE_BUNDLE_ID)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(TAPAPPROVE_BUNDLE_ID).notify
+        CODE_SIGN_ENTITLEMENTS: TapapproveNotify/TapapproveNotify.entitlements
+        SKIP_INSTALL: YES
+  TapapproveTests:
+    type: bundle.unit-test
+    platform: watchOS
+    sources:
+      - path: TapapproveTests
+    dependencies:
+      - target: Tapapprove
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(TAPAPPROVE_BUNDLE_ID).tests
+        GENERATE_INFOPLIST_FILE: YES
   TapapproveUITests:
     type: bundle.ui-testing
     platform: watchOS
@@ -78,4 +117,5 @@ schemes:
     test:
       config: Debug
       targets:
+        - TapapproveTests
         - TapapproveUITests

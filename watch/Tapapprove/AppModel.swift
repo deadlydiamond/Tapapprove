@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Observation
 import UserNotifications
@@ -10,7 +11,7 @@ final class AppModel {
         case loading
         case pairing(code: String, expiresAt: Date)
         case pairingFailed
-        case paired(computerName: String?)
+        case paired
     }
 
     private(set) var phase: Phase = .loading
@@ -18,9 +19,14 @@ final class AppModel {
     private(set) var isOffline = false
     private(set) var notice: String?
     private(set) var outcome: Outcome?
+    private(set) var sample: PendingRequest?
 
     /// Held in memory until the computer claims the code, so an abandoned pairing leaves nothing behind.
     private var pairingToken: String?
+    private var pairingSecret: String?
+    private var pairingKey: Curve25519.KeyAgreement.PrivateKey?
+    /// Requests already opened, so polling does not decrypt a long one again every time.
+    private var opened: [String: SealedRequest] = [:]
     private var apnsToken: String?
     private var inFlight: Set<String> = []
 
@@ -40,13 +46,37 @@ final class AppModel {
         phase = .loading
     }
 
+    func showSample() {
+        sample = .sample()
+    }
+
+    func answerSample(_ answer: Answer) async {
+        sample = nil
+        outcome = Outcome(answer: answer, isSending: false)
+        WKInterfaceDevice.current().play(answer.decision == .allow ? .success : .failure)
+        try? await Task.sleep(for: Config.outcomeDuration)
+        outcome = nil
+    }
+
+    /// A Yes on a notification that could not be trusted. Whatever it claimed to be, the real
+    /// request is still waiting here and on the computer.
+    func refuseNotification() {
+        WKInterfaceDevice.current().play(.failure)
+        show(notice: "Could not verify that notification, so nothing was sent.")
+    }
+
     func decide(requestID: String, answer: Answer) async {
-        guard let token = TokenStore.load(), inFlight.insert(requestID).inserted else { return }
+        guard ChannelCrypto.isRequestID(requestID),
+              let token = TokenStore.load(),
+              let keys = TokenStore.loadKeys(),
+              inFlight.insert(requestID).inserted
+        else { return }
         defer { inFlight.remove(requestID) }
         requests.removeAll { $0.id == requestID }
         outcome = Outcome(answer: answer)
         do {
-            try await RelayClient(token: token).decide(requestID: requestID, answer: answer)
+            let signed = try Self.sign(answer, requestID: requestID, keys: keys)
+            try await RelayClient(token: token).decide(requestID: requestID, answer: signed)
             outcome?.isSending = false
             WKInterfaceDevice.current().play(answer.decision == .allow ? .success : .failure)
             try? await Task.sleep(for: Config.outcomeDuration)
@@ -59,6 +89,24 @@ final class AppModel {
             outcome = nil
             show(notice: "Could not send that. Try again.")
         }
+    }
+
+    private static func sign(_ answer: Answer, requestID: String, keys: ChannelKeys) throws -> SignedAnswer {
+        let sealedMessage = try answer.message.map {
+            try ChannelCrypto.seal(ChannelCrypto.padded(message: $0), key: keys.answerKey, label: "msg:\(requestID)")
+        }
+        return SignedAnswer(
+            decision: answer.decision,
+            option: answer.option,
+            proof: ChannelCrypto.proof(
+                proofKey: keys.proofKey,
+                requestID: requestID,
+                decision: answer.decision,
+                option: answer.option,
+                sealedMessage: sealedMessage
+            ),
+            sealedMessage: sealedMessage
+        )
     }
 
     func unpair() async {
@@ -91,9 +139,21 @@ final class AppModel {
 
     private func startPairing() async {
         do {
-            let start = try await RelayClient().startPairing(name: WKInterfaceDevice.current().name)
+            let start = try await RelayClient().startPairing()
+            guard start.isWellFormed else {
+                pairingToken = nil
+                phase = .pairingFailed
+                return
+            }
+            let secret = ChannelCrypto.randomSecret()
             pairingToken = start.watchToken
-            phase = .pairing(code: start.code, expiresAt: Date().addingTimeInterval(start.expiresIn))
+            pairingSecret = secret
+            pairingKey = Curve25519.KeyAgreement.PrivateKey()
+            // Only the first part ever reached the relay. The rest stays on this screen.
+            phase = .pairing(
+                code: ChannelCrypto.pairingCode(lookup: start.code, secret: secret),
+                expiresAt: Date().addingTimeInterval(start.expiresIn)
+            )
         } catch {
             pairingToken = nil
             phase = .pairingFailed
@@ -101,35 +161,78 @@ final class AppModel {
     }
 
     private func checkPairingClaimed() async {
-        guard let token = pairingToken else {
+        guard let token = pairingToken, let secret = pairingSecret, let privateKey = pairingKey else {
             phase = .loading
             return
         }
+        let client = RelayClient(token: token)
         do {
-            let status = try await RelayClient(token: token).status()
-            guard status.paired else { return }
-            TokenStore.save(token)
-            pairingToken = nil
-            phase = .paired(computerName: status.peerName)
+            let status = try await client.status()
+            guard status.paired, let peerKey = status.peerKey else { return }
+            let keys = try await finishKeyExchange(client: client, secret: secret, peerKey: peerKey, privateKey: privateKey)
+            TokenStore.save(token: token, keys: keys)
+            forgetPairingAttempt()
+            phase = .paired
             await setUpPush()
         } catch RelayError.unauthorized {
-            pairingToken = nil
+            forgetPairingAttempt()
             phase = .loading
+        } catch is ChannelCryptoError {
+            // Whoever claimed the code does not know all of it, so this pairing is over.
+            try? await client.unpair()
+            forgetPairingAttempt()
+            phase = .pairingFailed
         } catch {
             // A blip while waiting. The code is still good, so keep showing it.
         }
     }
 
+    private func finishKeyExchange(
+        client: RelayClient,
+        secret: String,
+        peerKey: PairKey,
+        privateKey: Curve25519.KeyAgreement.PrivateKey
+    ) async throws -> ChannelKeys {
+        guard let cliPublicKey = Data(base64Encoded: peerKey.publicKey),
+              let tag = Data(base64Encoded: peerKey.tag)
+        else { throw ChannelCryptoError.badKey }
+        let tagKey = try ChannelCrypto.tagKey(secret: secret)
+        guard ChannelCrypto.verifyCLITag(tag, tagKey: tagKey, cliPublicKey: cliPublicKey) else {
+            throw ChannelCryptoError.badTag
+        }
+        let keys = try ChannelCrypto.deriveKeys(tagKey: tagKey, cliPublicKey: cliPublicKey, privateKey: privateKey)
+        let publicKey = privateKey.publicKey.rawRepresentation
+        let watchTag = ChannelCrypto.watchTag(tagKey: tagKey, cliPublicKey: cliPublicKey, watchPublicKey: publicKey)
+        do {
+            try await client.publishKey(PairKey(publicKey: publicKey.base64EncodedString(), tag: watchTag.base64EncodedString()))
+        } catch RelayError.alreadyClosed {
+            // A retry after a lost response. The relay already holds this same key.
+        }
+        return keys
+    }
+
+    private func forgetPairingAttempt() {
+        pairingToken = nil
+        pairingSecret = nil
+        pairingKey = nil
+    }
+
     private func refresh(token: String) async {
         let client = RelayClient(token: token)
+        // A pairing from before encryption has no keys, so it has to start again.
+        guard let keys = TokenStore.loadKeys() else {
+            try? await client.unpair()
+            forgetPairing()
+            return
+        }
         do {
-            if case .paired = phase {} else {
-                phase = .paired(computerName: try await client.status().peerName)
+            if phase != .paired {
+                phase = .paired
                 await setUpPush()
             }
             let list = try await client.pending()
             isOffline = false
-            apply(list)
+            apply(list, keys: keys)
         } catch RelayError.unauthorized {
             forgetPairing()
         } catch {
@@ -137,33 +240,45 @@ final class AppModel {
         }
     }
 
-    private func apply(_ list: PendingList) {
+    private func apply(_ list: PendingList, keys: ChannelKeys) {
         let now = Date()
         let known = Set(requests.map(\.id))
+        // Text that does not open did not come from the computer, so it is never shown.
         let fresh = list.requests
             .filter { !inFlight.contains($0.id) }
-            .map { request in
-                PendingRequest(
+            .compactMap { request -> PendingRequest? in
+                guard let sealed = open(request, keys: keys) else { return nil }
+                return PendingRequest(
                     id: request.id,
-                    tool: request.tool,
-                    title: request.title,
-                    detail: request.detail,
-                    project: request.project,
+                    tool: sealed.tool,
+                    title: sealed.title,
+                    detail: sealed.detail,
+                    project: sealed.project,
                     // Count down from the relay's clock, so a skewed watch clock cannot mislead.
                     expiresAt: now.addingTimeInterval((request.expiresAt - list.serverTime) / 1000),
-                    isTruncated: request.truncated,
-                    sessionOptions: request.options ?? []
+                    sessionOptions: sealed.options ?? []
                 )
             }
+        opened = opened.filter { entry in list.requests.contains { $0.id == entry.key } }
         if fresh.contains(where: { !known.contains($0.id) }) {
             WKInterfaceDevice.current().play(.notification)
         }
         requests = fresh
     }
 
+    private func open(_ request: ApprovalRequest, keys: ChannelKeys) -> SealedRequest? {
+        if let cached = opened[request.id] { return cached }
+        guard let data = try? ChannelCrypto.open(request.sealed, key: keys.requestKey, label: "req:\(request.id)"),
+              let sealed = try? JSONDecoder().decode(SealedRequest.self, from: data)
+        else { return nil }
+        opened[request.id] = sealed
+        return sealed
+    }
+
     private func forgetPairing() {
         TokenStore.delete()
         requests = []
+        opened = [:]
         phase = .loading
     }
 

@@ -3,7 +3,7 @@
 
 import type { ApnsEnv } from './apns.ts';
 import { ChannelDO } from './channel.ts';
-import { clipped, errorResponse, HttpError, json, readJson } from './http.ts';
+import { errorResponse, HttpError, json, pairKey, readJson } from './http.ts';
 
 export { ChannelDO };
 
@@ -14,10 +14,10 @@ export interface Env extends ApnsEnv {
 }
 
 const CODE_TTL_SECONDS = 600;
-const CODE_LENGTH = 6;
+// The relay sees only this part of the code the watch shows. The rest never leaves the devices.
+const CODE_LENGTH = 4;
 // 32 letters and digits without the look-alikes 0, O, 1 and I.
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-const MAX_NAME = 64;
 const MAX_CODE_ATTEMPTS = 5;
 const TOKEN_SHAPE = /^Bearer ([0-9a-f]{32})\.[A-Za-z0-9_-]{43}$/;
 
@@ -46,11 +46,10 @@ async function limitPairing(request: Request, env: Env, action: string): Promise
 
 async function startPairing(request: Request, env: Env): Promise<Response> {
   await limitPairing(request, env, 'start');
-  const body = await readJson(request);
   const channelId = crypto.randomUUID().replace(/-/g, '');
   const code = await unusedCode(env);
   const channel = env.CHANNEL.get(env.CHANNEL.idFromName(channelId));
-  const watchToken = await channel.init(channelId, clipped(body.name, MAX_NAME) ?? null, CODE_TTL_SECONDS);
+  const watchToken = await channel.init(channelId, CODE_TTL_SECONDS);
   await env.PAIR_CODES.put(codeKey(code), channelId, { expirationTtl: CODE_TTL_SECONDS });
   return json({ code, watchToken, expiresIn: CODE_TTL_SECONDS });
 }
@@ -59,13 +58,15 @@ async function claimPairing(request: Request, env: Env): Promise<Response> {
   await limitPairing(request, env, 'claim');
   const body = await readJson(request);
   if (typeof body.code !== 'string') throw new HttpError(400, 'invalid_code');
+  const cliKey = pairKey(body);
+  if (!cliKey) throw new HttpError(400, 'invalid_key');
   const code = body.code.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const channelId = await env.PAIR_CODES.get(codeKey(code));
   if (!channelId) throw new HttpError(404, 'invalid_code');
-  const claimed = await env.CHANNEL.get(env.CHANNEL.idFromName(channelId)).claim(clipped(body.name, MAX_NAME) ?? null);
+  const claimed = await env.CHANNEL.get(env.CHANNEL.idFromName(channelId)).claim(cliKey);
   if (!claimed) throw new HttpError(404, 'invalid_code');
   await env.PAIR_CODES.delete(codeKey(code));
-  return json({ cliToken: claimed.cliToken, watchName: claimed.watchName });
+  return json({ cliToken: claimed });
 }
 
 function forwardToChannel(request: Request, env: Env): Promise<Response> {

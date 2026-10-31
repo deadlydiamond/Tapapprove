@@ -24,12 +24,8 @@ export interface PushDevice {
 
 export interface PushSummary {
   id: string;
-  title: string;
-  detail: string;
-  project?: string;
+  preview?: string;
   expiresAt?: number;
-  truncated?: boolean;
-  options?: string[];
 }
 
 export interface PushResult {
@@ -37,7 +33,8 @@ export interface PushResult {
   dead: boolean;
 }
 
-const MAX_BODY = 178;
+// APNs allows 4 KB for the whole payload.
+const MAX_PREVIEW = 3000;
 // APNs refuses tokens older than an hour and rate limits new ones, so reuse for 50 minutes.
 const TOKEN_LIFETIME_MS = 50 * 60 * 1000;
 
@@ -85,23 +82,17 @@ async function providerToken(config: ApnsConfig, now: number): Promise<string> {
   return jwt;
 }
 
-export function buildPayload({ id, title, detail, project, truncated, options }: PushSummary) {
-  // The notification offers Approve only when it can show the whole request, and a session
-  // answer only when it can also show what that answer allows.
-  const option = options?.[0];
-  const whole = option ? `${detail}\n\n${option}` : detail;
-  const fits = whole.length <= MAX_BODY && !truncated;
+/** The relay cannot read the request. The watch opens `preview` and replaces this generic text. */
+export function buildPayload({ id, preview }: PushSummary) {
   return {
     aps: {
-      alert: {
-        title,
-        ...(project ? { subtitle: project } : {}),
-        body: fits ? whole || 'Tap to review' : detail.length <= MAX_BODY ? detail || 'Tap to review' : `${detail.slice(0, MAX_BODY)}…`,
-      },
-      category: !fits ? 'TAPAPPROVE_REVIEW' : option ? 'TAPAPPROVE_QUICK_SESSION' : 'TAPAPPROVE_QUICK',
+      alert: { title: 'Tapapprove', body: 'A request is waiting.' },
+      category: 'TAPAPPROVE_REVIEW',
       sound: 'default',
+      'mutable-content': 1,
     },
     requestId: id,
+    ...(preview && preview.length <= MAX_PREVIEW ? { preview } : {}),
   };
 }
 

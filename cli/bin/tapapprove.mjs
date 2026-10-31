@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 import { cpSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
-import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { claudeSettingsPath, configDir, DEFAULT_RELAY, DEFAULT_WAIT_SECONDS, deleteConfig, loadConfig, saveConfig } from '../lib/config.mjs';
 import { describeTool, MAX_DETAIL } from '../lib/describe.mjs';
 import { runHook } from '../lib/hook.mjs';
-import { relayClient, waitForDecision } from '../lib/relay.mjs';
+import { cliTag, deriveKeys, generateKeyPair, pairingTagKey, splitCode, tagMatches, watchTag } from '../lib/e2e.mjs';
+import { relayClient, waitForDecision, waitForWatchKey } from '../lib/relay.mjs';
+import { openAnswer, sealRequest } from '../lib/request.mjs';
 import { hookInstalled, installHook, readSettings, uninstallHook } from '../lib/settings.mjs';
 
 const USAGE = `Usage: tapapprove <command>
 
   pair <code>   Link this computer to the code shown on your watch
                   --relay <url>        Relay to use
-                  --name <name>        Name shown for this computer
                   --wait <seconds>     How long to wait for the watch (default ${DEFAULT_WAIT_SECONDS})
                   --scope user|project Where to install the hook (default user)
                   --project-dir <dir>  Project for --scope project (default current folder)
@@ -22,6 +22,7 @@ const USAGE = `Usage: tapapprove <command>
                   --tool <name>        Tool name to show (default Bash)
                   --command <text>     Command to show
                   --timeout <seconds>  How long to wait (default 60)
+                  --project <name>     Project name to show
                   --session-label <text>  Also offer this "for this session" answer
   status        Show the pairing, the relay and the hook
   unpair        Remove the pairing and the hook
@@ -29,7 +30,6 @@ const USAGE = `Usage: tapapprove <command>
 
 const OPTIONS = {
   relay: { type: 'string' },
-  name: { type: 'string' },
   wait: { type: 'string' },
   scope: { type: 'string' },
   'project-dir': { type: 'string' },
@@ -37,6 +37,7 @@ const OPTIONS = {
   command: { type: 'string' },
   timeout: { type: 'string' },
   'session-label': { type: 'string' },
+  project: { type: 'string' },
 };
 
 class UsageError extends Error {}
@@ -83,24 +84,47 @@ async function pair(code, values) {
   const relay = (values.relay ?? loadConfig()?.relay ?? DEFAULT_RELAY).replace(/\/+$/, '');
   const settingsPath = claudeSettingsPath({ scope, projectDir: values['project-dir'] });
 
+  const parts = splitCode(code);
+  if (!parts) throw new Error('A pairing code has 20 characters. Use the one shown on your watch.');
+
   // Check this before claiming, because a claim uses up the code.
   readSettings(settingsPath);
 
+  const tagKey = pairingTagKey(parts.secret);
+  const mine = generateKeyPair();
   let cliToken;
   try {
-    ({ cliToken } = await relayClient(relay).claim(code.toUpperCase().replace(/[^A-Z0-9]/g, ''), values.name ?? hostname()));
+    ({ cliToken } = await relayClient(relay).claim(parts.lookup, {
+      publicKey: mine.publicKey,
+      tag: cliTag(tagKey, mine.publicKey),
+    }));
   } catch (error) {
     if (error.status === 404) throw new Error('That code is wrong or has expired. Get a new code from your watch.');
     throw error;
   }
 
+  const client = relayClient(relay, cliToken);
+  const watch = await waitForWatchKey(client);
+  if (!watch || !tagMatches(watch.tag, watchTag(tagKey, mine.publicKey, watch.publicKey))) {
+    await client.revoke().catch(() => {});
+    throw new Error('Could not verify your watch, so nothing was paired. Get a new code and try again.');
+  }
+  const keys = deriveKeys({
+    tagKey,
+    cliPublicKey: mine.publicKey,
+    watchPublicKey: watch.publicKey,
+    privateKey: mine.privateKey,
+    peerPublicKey: watch.publicKey,
+  });
+
   installHook(settingsPath, installPrivateCopy(), { waitSeconds });
-  saveConfig({ relay, token: cliToken, waitSeconds, settingsPath });
+  saveConfig({ relay, token: cliToken, keys, waitSeconds, settingsPath });
   console.log(`Paired with your watch.\nHook installed in ${settingsPath}\nTry it: tapapprove test`);
 }
 
 async function test(values) {
   const config = requireConfig();
+  if (!config.keys) throw new Error('This pairing is from before encryption. Run tapapprove unpair, then pair again.');
   const timeout = positiveSeconds(values.timeout, '--timeout', 60);
   const tool = values.tool ?? 'Bash';
   const summary = describeTool(tool, { command: values.command ?? 'echo "Hello from Tapapprove"' });
@@ -110,16 +134,24 @@ async function test(values) {
     return 2;
   }
   const client = relayClient(config.relay, config.token);
-  const { id, pushed } = await client.createRequest({
+  const sealed = sealRequest(config.keys, {
     tool,
-    ...summary,
+    title: summary.title,
+    detail: summary.detail,
     options: label ? [label] : [],
-    project: 'tapapprove test',
+    project: values.project ?? 'tapapprove test',
     ttlSeconds: timeout,
   });
+  const { id } = sealed;
+  const { pushed } = await client.createRequest(sealed);
   console.log(pushed ? 'Sent. Check your watch.' : 'Sent without a push, so open Tapapprove on your watch.');
 
-  const { status, option, message } = await waitForDecision(client, id, timeout);
+  const { status, option, message } = openAnswer(config.keys, id, await waitForDecision(client, id, timeout));
+  if (status === 'forged') {
+    await client.cancel(id).catch(() => {});
+    console.log('An answer arrived that did not come from your watch, so it was ignored.');
+    return 2;
+  }
   if (status === 'allow') {
     console.log(option === 0 ? 'Approved on the watch for this session.' : 'Approved on the watch.');
     return 0;
@@ -155,9 +187,10 @@ async function status() {
     throw error;
   }
   console.log(`Paired:     ${state.paired ? 'yes' : 'no'}`);
+  console.log(`Encrypted:  ${config.keys ? 'yes' : 'no, run tapapprove unpair, then pair again'}`);
   console.log(`Watch seen: ${ago(state.lastWatchSeenAt)}`);
   console.log(`Push:       ${state.hasPushToken ? 'registered' : 'not registered'}`);
-  console.log(`Pending:    ${state.pending}`);
+  console.log(`Pending:    ${Number(state.pending)}`);
   return 0;
 }
 
@@ -182,10 +215,11 @@ function readStdin() {
 
 async function main() {
   const { values, positionals } = parseArgs({ options: OPTIONS, allowPositionals: true });
-  const [command, argument] = positionals;
+  const [command, ...rest] = positionals;
   switch (command) {
     case 'pair':
-      await pair(argument, values);
+      // Typed with spaces, a code arrives in pieces.
+      await pair(rest.join(''), values);
       return 0;
     case 'test':
       return test(values);

@@ -1,6 +1,8 @@
 import Foundation
 
 enum Config {
+    static let privacyPolicyURL = URL(string: "https://github.com/deadlydiamond/Tapapprove/blob/main/PRIVACY.md")!
+
     /// Set at build time by TAPAPPROVE_RELAY_URL, so a build from source never sends one
     /// person's commands to another person's relay by accident. Unset, nothing is reachable.
     static let relayURL: URL = {
@@ -23,7 +25,8 @@ enum Config {
 
     static let pollInterval: Duration = .seconds(2)
     /// A new request ignores taps this long, so a tap aimed at the previous one cannot approve it.
-    static let armDelay: Duration = .milliseconds(600)
+    static let armInterval: TimeInterval = 0.6
+    static let armDelay: Duration = .seconds(armInterval)
     /// The UI test waits for the app to go idle before it looks, so it needs longer to see this.
     static let outcomeDuration: Duration = isUITest ? .seconds(4) : .milliseconds(900)
 }

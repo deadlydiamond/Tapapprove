@@ -1,5 +1,14 @@
 import Foundation
 
+/// What the computer sealed for the watch. The relay cannot read any of this.
+struct SealedRequest: Decodable, Sendable {
+    let tool: String
+    let title: String
+    let detail: String
+    let project: String?
+    let options: [String]?
+}
+
 struct PendingRequest: Identifiable, Equatable {
     /// The computer puts this line first when a command leaves the sandbox.
     static let sandboxWarning = "Runs outside the sandbox"
@@ -11,8 +20,25 @@ struct PendingRequest: Identifiable, Equatable {
     let detail: String
     let project: String?
     let expiresAt: Date
-    let isTruncated: Bool
     let sessionOptions: [String]
+
+    private static let sampleID = "sample"
+
+    /// Real requests have UUIDs, so nothing the computer sends can pass for this.
+    var isSample: Bool { id == Self.sampleID }
+
+    /// Shows how a request works without a computer, for anyone trying the app first.
+    static func sample(now: Date = .now) -> PendingRequest {
+        PendingRequest(
+            id: sampleID,
+            tool: "Bash",
+            title: "Run command",
+            detail: "git push origin main",
+            project: nil,
+            expiresAt: now.addingTimeInterval(90),
+            sessionOptions: ["Yes, allow git push for this session"]
+        )
+    }
 
     var symbolName: String {
         switch tool {

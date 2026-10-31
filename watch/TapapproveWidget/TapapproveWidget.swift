@@ -30,21 +30,21 @@ struct LauncherView: View {
         case .accessoryInline:
             Text("Tapapprove")
         case .accessoryCorner:
-            monogram
+            mark
                 .widgetLabel("Tapapprove")
         default:
             ZStack {
                 AccessoryWidgetBackground()
-                monogram
+                mark
             }
         }
     }
 
-    private var monogram: some View {
-        Text("T")
-            .font(.system(.title2, design: .rounded).weight(.heavy))
-            .foregroundStyle(Color.accentColor)
+    private var mark: some View {
+        BrandMark()
+            .fill(Color.accentColor)
             .widgetAccentable()
+            .accessibilityLabel("Tapapprove")
     }
 }
 

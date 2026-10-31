@@ -19,30 +19,27 @@ struct RequestAnswers: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            // Only a CLI before 0.1.1 sends cut requests, and those can only be denied here.
-            if !request.isTruncated {
-                Button {
-                    onAnswer(Answer(decision: .allow))
-                } label: {
-                    answerText("Yes")
-                }
-                .tint(.green)
-                .prominentGlassButton()
-                .accessibilityIdentifier("approveButton")
+            Button {
+                onAnswer(Answer(decision: .allow))
+            } label: {
+                answerText("Yes")
+                    .bold()
+            }
+            .glassButton()
+            .accessibilityIdentifier("approveButton")
 
-                ForEach(Array(request.sessionOptions.enumerated()), id: \.offset) { index, label in
-                    Button {
-                        onAnswer(Answer(decision: .allow, option: index))
-                    } label: {
-                        answerText(label)
-                            .font(.footnote)
-                    }
-                    .glassButton()
-                    .accessibilityIdentifier("sessionOption\(index)")
+            ForEach(Array(request.sessionOptions.enumerated()), id: \.offset) { index, label in
+                Button {
+                    onAnswer(Answer(decision: .allow, option: index))
+                } label: {
+                    answerText(label)
+                        .font(.footnote)
                 }
+                .glassButton()
+                .accessibilityIdentifier("sessionOption\(index)")
             }
 
-            Button(role: .destructive) {
+            Button {
                 onAnswer(Answer(decision: .deny))
             } label: {
                 answerText("No")

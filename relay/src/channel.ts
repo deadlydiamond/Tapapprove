@@ -4,7 +4,7 @@
 
 import { DurableObject } from 'cloudflare:workers';
 import { apnsConfig, sendPush, type DeviceEnv } from './apns.ts';
-import { clipped, errorResponse, HttpError, json, randomBase64url, readJson, sha256Hex } from './http.ts';
+import { errorResponse, HttpError, json, pairKey, randomBase64url, readJson, sha256Hex, type PairKey } from './http.ts';
 import type { Env } from './index.ts';
 
 type Role = 'watch' | 'cli';
@@ -14,42 +14,33 @@ interface Meta {
   channelId: string;
   watchHash: string;
   cliHash: string | null;
-  watchName: string | null;
-  cliName: string | null;
   codeExpiresAt: number;
   apnsToken: string | null;
   apnsEnv: DeviceEnv | null;
   lastWatchSeenAt: number | null;
+  cliKey: PairKey | null;
+  watchKey: PairKey | null;
 }
 
+/** All the relay holds about a request. It cannot read `sealed`, and it cannot make `proof`. */
 interface RequestRecord {
   id: string;
-  tool: string;
-  title: string;
-  detail: string;
-  project?: string;
+  sealed: string;
+  preview?: string;
   createdAt: number;
   expiresAt: number;
   status: Status;
-  /** Part of the request is not shown, so it can be denied but not approved. */
-  truncated: boolean;
-  /** Labels for 'for this session' answers. The rules behind them stay on the computer. */
-  options?: string[];
-  /** Which of those answers was chosen. */
   option?: number;
-  /** What the person said to do instead of a denied request. */
-  message?: string;
+  proof?: string;
+  sealedMessage?: string;
 }
 
 const META_KEY = 'meta';
 const REQUEST_PREFIX = 'req:';
-const MAX_NAME = 64;
-const MAX_TITLE = 200;
-// Above the CLI's own limit, so a request from the CLI is never clipped here.
-const MAX_DETAIL = 120_000;
-const MAX_OPTIONS = 3;
-const MAX_OPTION = 200;
-const MAX_MESSAGE = 1000;
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const MAX_PROOF = 128;
+const MAX_OPTION = 9;
+const MAX_SEALED_MESSAGE = 8000;
 const DEFAULT_TTL_SECONDS = 90;
 const MAX_TTL_SECONDS = 300;
 const MAX_LONG_POLL_SECONDS = 30;
@@ -68,31 +59,31 @@ export class ChannelDO extends DurableObject<Env> {
 
   // Called by the Worker over RPC.
 
-  async init(channelId: string, watchName: string | null, expiresInSeconds: number): Promise<string> {
+  async init(channelId: string, expiresInSeconds: number): Promise<string> {
     const watchToken = makeToken(channelId);
     const codeExpiresAt = Date.now() + expiresInSeconds * 1000;
     const meta: Meta = {
       channelId,
       watchHash: await sha256Hex(watchToken),
       cliHash: null,
-      watchName,
-      cliName: null,
       codeExpiresAt,
       apnsToken: null,
       apnsEnv: null,
       lastWatchSeenAt: null,
+      cliKey: null,
+      watchKey: null,
     };
     await this.ctx.storage.put(META_KEY, meta);
     await this.ctx.storage.setAlarm(codeExpiresAt);
     return watchToken;
   }
 
-  async claim(cliName: string | null): Promise<{ cliToken: string; watchName: string | null } | null> {
+  async claim(cliKey: PairKey): Promise<string | null> {
     const meta = await this.meta();
     if (!meta || meta.cliHash || Date.now() >= meta.codeExpiresAt) return null;
     const cliToken = makeToken(meta.channelId);
-    await this.saveMeta({ ...meta, cliHash: await sha256Hex(cliToken), cliName });
-    return { cliToken, watchName: meta.watchName };
+    await this.saveMeta({ ...meta, cliHash: await sha256Hex(cliToken), cliKey });
+    return cliToken;
   }
 
   // Authenticated routes, forwarded by the Worker.
@@ -117,6 +108,14 @@ export class ChannelDO extends DurableObject<Env> {
 
     if (key === 'GET /v1/status') return this.status(meta, role);
     if (key === 'DELETE /v1/pair') return this.revoke();
+    if (key === 'PUT /v1/pair/key') {
+      need('watch');
+      return this.publishWatchKey(meta, request);
+    }
+    if (key === 'GET /v1/pair/key') {
+      need('cli');
+      return json({ key: meta.watchKey });
+    }
     if (key === 'PUT /v1/device') {
       need('watch');
       return this.registerDevice(meta, request);
@@ -153,7 +152,7 @@ export class ChannelDO extends DurableObject<Env> {
     return json({
       paired: meta.cliHash !== null,
       role,
-      peerName: role === 'watch' ? meta.cliName : meta.watchName,
+      peerKey: role === 'watch' ? meta.cliKey : undefined,
       hasPushToken: meta.apnsToken !== null,
       lastWatchSeenAt: meta.lastWatchSeenAt,
       pending: records.filter((record) => currentStatus(record, now) === 'pending').length,
@@ -178,34 +177,32 @@ export class ChannelDO extends DurableObject<Env> {
     return json({ ok: true });
   }
 
+  private async publishWatchKey(meta: Meta, request: Request): Promise<Response> {
+    if (meta.watchKey) throw new HttpError(409, 'key_already_set');
+    const watchKey = pairKey(await readJson(request));
+    if (!watchKey) throw new HttpError(400, 'invalid_key');
+    await this.saveMeta({ ...meta, watchKey });
+    return json({ ok: true });
+  }
+
   private async createRequest(meta: Meta, request: Request): Promise<Response> {
     const body = await readJson(request);
-    const tool = clipped(body.tool, MAX_TITLE);
-    if (!tool) throw new HttpError(400, 'invalid_tool');
+    if (typeof body.id !== 'string' || !REQUEST_ID.test(body.id)) throw new HttpError(400, 'invalid_id');
+    if (typeof body.sealed !== 'string' || body.sealed.length === 0) throw new HttpError(400, 'invalid_request');
+    if (await this.ctx.storage.get(REQUEST_PREFIX + body.id)) throw new HttpError(409, 'duplicate_id');
 
     const now = Date.now();
     const pending = (await this.allRequests()).filter((record) => currentStatus(record, now) === 'pending');
     if (pending.length >= MAX_PENDING) throw new HttpError(429, 'too_many_pending');
 
     const ttl = typeof body.ttlSeconds === 'number' ? body.ttlSeconds : DEFAULT_TTL_SECONDS;
-    const fullDetail = typeof body.detail === 'string' ? body.detail : '';
-    const options = Array.isArray(body.options)
-      ? body.options
-          .filter((option): option is string => typeof option === 'string' && option.length > 0)
-          .slice(0, MAX_OPTIONS)
-          .map((option) => option.slice(0, MAX_OPTION))
-      : [];
     const record: RequestRecord = {
-      id: crypto.randomUUID(),
-      tool,
-      title: clipped(body.title, MAX_TITLE) ?? tool,
-      detail: fullDetail.slice(0, MAX_DETAIL),
-      project: clipped(body.project, MAX_NAME),
+      id: body.id,
+      sealed: body.sealed,
+      ...(typeof body.preview === 'string' ? { preview: body.preview } : {}),
       createdAt: now,
       expiresAt: now + Math.min(Math.max(ttl, 1), MAX_TTL_SECONDS) * 1000,
       status: 'pending',
-      truncated: body.truncated === true || fullDetail.length > MAX_DETAIL,
-      options,
     };
     await this.ctx.storage.put(REQUEST_PREFIX + record.id, record);
     await this.ensureCleanup(now);
@@ -230,17 +227,7 @@ export class ChannelDO extends DurableObject<Env> {
     const requests = (await this.allRequests())
       .filter((record) => currentStatus(record, now) === 'pending')
       .sort((a, b) => a.createdAt - b.createdAt)
-      .map(({ id, tool, title, detail, project, createdAt, expiresAt, truncated, options = [] }) => ({
-        id,
-        tool,
-        title,
-        detail,
-        project,
-        createdAt,
-        expiresAt,
-        truncated,
-        options,
-      }));
+      .map(({ id, sealed, createdAt, expiresAt }) => ({ id, sealed, createdAt, expiresAt }));
     return json({ requests, serverTime: now });
   }
 
@@ -252,25 +239,38 @@ export class ChannelDO extends DurableObject<Env> {
       await this.waitForChange(id, Math.min(wait * 1000, record.expiresAt - now));
     }
     const latest = await this.requireRequest(id);
-    return json({ id, status: currentStatus(latest, Date.now()), option: latest.option, message: latest.message });
+    return json({
+      id,
+      status: currentStatus(latest, Date.now()),
+      option: latest.option,
+      proof: latest.proof,
+      sealedMessage: latest.sealedMessage,
+    });
   }
 
   private async decide(id: string, request: Request): Promise<Response> {
-    const { decision, option, message } = await readJson(request);
+    const { decision, option, proof, sealedMessage } = await readJson(request);
     if (decision !== 'allow' && decision !== 'deny') throw new HttpError(400, 'invalid_decision');
     const record = await this.requireRequest(id);
     const status = currentStatus(record, Date.now());
     if (status === 'pending') {
-      if (decision === 'allow' && record.truncated) {
-        throw new HttpError(409, 'too_long_to_approve', { status });
+      // The computer checks the proof. The relay only refuses what could never be one.
+      if (typeof proof !== 'string' || proof.length === 0 || proof.length > MAX_PROOF) {
+        throw new HttpError(400, 'invalid_proof');
       }
+      record.proof = proof;
       if (decision === 'allow' && option !== undefined) {
-        if (!Number.isInteger(option) || (option as number) < 0 || (option as number) >= (record.options ?? []).length) {
+        if (!Number.isInteger(option) || (option as number) < 0 || (option as number) > MAX_OPTION) {
           throw new HttpError(400, 'invalid_option');
         }
         record.option = option as number;
       }
-      if (decision === 'deny') record.message = clipped(message, MAX_MESSAGE);
+      if (decision === 'deny' && sealedMessage !== undefined) {
+        if (typeof sealedMessage !== 'string' || sealedMessage.length > MAX_SEALED_MESSAGE) {
+          throw new HttpError(400, 'invalid_message');
+        }
+        record.sealedMessage = sealedMessage;
+      }
       await this.finish(record, decision);
       return json({ id, status: decision });
     }
@@ -340,7 +340,7 @@ export class ChannelDO extends DurableObject<Env> {
 
   /** Closes a request and drops its text, which nothing needs once it is answered. */
   private async finish(record: RequestRecord, status: Status): Promise<void> {
-    await this.ctx.storage.put(REQUEST_PREFIX + record.id, { ...record, status, detail: '', options: [] });
+    await this.ctx.storage.put(REQUEST_PREFIX + record.id, { ...record, status, sealed: '', preview: undefined });
     this.wake(record.id);
   }
 

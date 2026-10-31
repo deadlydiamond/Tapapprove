@@ -58,12 +58,6 @@ test('a rule too long to read in full is not offered', () => {
   assert.deepEqual(sessionOptions('Bash', [rule('Bash', 'a'.repeat(300))]), []);
 });
 
-test('secrets in a rule are masked in the label only', () => {
-  const [option] = sessionOptions('Bash', [rule('Bash', 'API_KEY=hunter2 npm run *')]);
-  assert.ok(!option.label.includes('hunter2'));
-  assert.equal(option.update.rules[0].ruleContent, 'API_KEY=hunter2 npm run *');
-});
-
 test('an MCP tool without suggestions can be allowed by name, as Claude does for its own dialog', () => {
   const [option] = sessionOptions('mcp__claude-in-chrome__computer', []);
   assert.equal(option.label, 'Yes, allow claude-in-chrome: computer for this session');
@@ -83,4 +77,20 @@ test('odd input never throws', () => {
   assert.deepEqual(sessionOptions('Bash', undefined), []);
   assert.deepEqual(sessionOptions('Bash', 'nope'), []);
   assert.deepEqual(sessionOptions('Bash', [null, {}, { type: 'addRules' }, { type: 'addDirectories' }]), []);
+});
+
+test('a rule name holding hidden characters is shown as what it is', () => {
+  const [option] = sessionOptions('Bash', [rule('Bash', 'npm\u202E run *')]);
+  assert.match(option.label, /U\+202E/);
+  assert.ok(!option.label.includes('\u202E'));
+});
+
+test('a rule says everything it allows, secrets and all, since that is what runs', () => {
+  const [option] = sessionOptions('Bash', [rule('Bash', 'API_KEY=hunter2 npm run *')]);
+  assert.equal(option.label, 'Yes, allow API_KEY=hunter2 npm run * for this session');
+});
+
+test('a rule that means little alone names its tool', () => {
+  const [option] = sessionOptions('Edit', [rule('Edit', '/**')]);
+  assert.equal(option.label, 'Yes, allow Edit file: /** for this session');
 });

@@ -1,16 +1,25 @@
 import Foundation
 
-enum Decision: String, Codable, Sendable {
-    case allow
-    case deny
-}
-
 /// An answer to a request. `option` picks a "for this session" answer, and `message` says
 /// what to do instead of a denied request.
-struct Answer: Encodable, Equatable, Sendable {
+struct Answer: Equatable, Sendable {
     let decision: Decision
     var option: Int?
     var message: String?
+}
+
+/// What the relay carries back to the computer, which checks the proof before believing it.
+struct SignedAnswer: Encodable, Sendable {
+    let decision: Decision
+    let option: Int?
+    let proof: String
+    let sealedMessage: String?
+}
+
+/// One side of the key exchange, as the relay carries it.
+struct PairKey: Codable, Sendable {
+    let publicKey: String
+    let tag: String
 }
 
 enum RelayError: Error {
@@ -22,25 +31,29 @@ enum RelayError: Error {
 }
 
 struct PairingStart: Decodable, Sendable {
+    private static let longestWait: Double = 600
+
     let code: String
     let watchToken: String
     let expiresIn: Double
+
+    /// The watch shows `code` for the person to type into a terminal, so the relay must not be
+    /// able to put anything there but the four characters it is for. Any more could turn what
+    /// they type into a different command, or send the secret part of the code to the relay.
+    var isWellFormed: Bool {
+        code.wholeMatch(of: /[A-HJ-NP-Z2-9]{4}/) != nil && expiresIn > 0 && expiresIn <= Self.longestWait
+    }
 }
 
 struct RelayStatus: Decodable, Sendable {
     let paired: Bool
-    let peerName: String?
+    let peerKey: PairKey?
 }
 
 struct ApprovalRequest: Decodable, Sendable {
     let id: String
-    let tool: String
-    let title: String
-    let detail: String
-    let project: String?
+    let sealed: String
     let expiresAt: Double
-    let truncated: Bool
-    let options: [String]?
 }
 
 struct PendingList: Decodable, Sendable {
@@ -48,12 +61,24 @@ struct PendingList: Decodable, Sendable {
     let serverTime: Double
 }
 
+/// Requests are for the relay alone, so a hacked relay must not be able to aim them elsewhere.
+private final class RefuseRedirects: NSObject, URLSessionTaskDelegate, Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest
+    ) async -> URLRequest? {
+        nil
+    }
+}
+
 struct RelayClient: Sendable {
     var baseURL = Config.relayURL
     var token: String?
 
-    func startPairing(name: String) async throws -> PairingStart {
-        try await send("POST", "/v1/pair/start", body: ["name": name])
+    func startPairing() async throws -> PairingStart {
+        try await send("POST", "/v1/pair/start")
     }
 
     func status() async throws -> RelayStatus {
@@ -64,8 +89,12 @@ struct RelayClient: Sendable {
         try await send("GET", "/v1/requests")
     }
 
-    func decide(requestID: String, answer: Answer) async throws {
+    func decide(requestID: String, answer: SignedAnswer) async throws {
         let _: Empty = try await send("POST", "/v1/requests/\(requestID)/decision", body: answer)
+    }
+
+    func publishKey(_ key: PairKey) async throws {
+        let _: Empty = try await send("PUT", "/v1/pair/key", body: key)
     }
 
     func registerDevice(apnsToken: String, environment: String) async throws {
@@ -94,7 +123,7 @@ struct RelayClient: Sendable {
             request.httpBody = try JSONEncoder().encode(body)
         }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request, delegate: RefuseRedirects())
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         switch status {
         case 200..<300:

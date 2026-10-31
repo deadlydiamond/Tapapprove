@@ -2,17 +2,21 @@
 // offers. The rules themselves stay on this computer: the watch only picks a number from
 // this list, so neither the watch nor the relay can invent a rule.
 
-import { mask, titleFor } from './describe.mjs';
+import { showHidden, titleFor } from './describe.mjs';
 
 const MAX_OPTIONS = 3;
 const MAX_LABEL = 200;
 
 const SESSION_ONLY = { destination: 'session' };
+// A command or a domain reads as what it allows. Other rule text means little without its tool.
+const READS_ALONE = new Set(['Bash', 'WebFetch']);
 
 function nameRule({ toolName, ruleContent } = {}) {
-  if (ruleContent) return String(ruleContent).replace(/^domain:/, '');
-  if (!toolName) return null;
-  return String(toolName).startsWith('mcp__') ? titleFor(String(toolName)) : String(toolName);
+  if (!toolName) return ruleContent ? String(ruleContent).replace(/^domain:/, '') : null;
+  const tool = String(toolName);
+  if (!ruleContent) return tool.startsWith('mcp__') ? titleFor(tool) : tool;
+  const what = String(ruleContent).replace(/^domain:/, '');
+  return READS_ALONE.has(tool) ? what : `${titleFor(tool)}: ${what}`;
 }
 
 function whatItAllows(suggestion) {
@@ -30,9 +34,10 @@ function whatItAllows(suggestion) {
 export function sessionOptions(tool, suggestions) {
   const options = [];
   for (const suggestion of Array.isArray(suggestions) ? suggestions : []) {
-    const what = whatItAllows(suggestion);
-    if (!what) continue;
-    const label = `Yes, allow ${mask(what)} for this session`;
+    const allowed = whatItAllows(suggestion);
+    if (!allowed) continue;
+    const what = showHidden(allowed);
+    const label = `Yes, allow ${what} for this session`;
     // A label cut short could hide what the rule allows, so it is not offered at all.
     if (label.length > MAX_LABEL) continue;
     options.push({ label, update: { ...suggestion, ...SESSION_ONLY } });

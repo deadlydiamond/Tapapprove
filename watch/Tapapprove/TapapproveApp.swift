@@ -15,32 +15,40 @@ struct TapapproveApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, WKApplicationDelegate, UNUserNotificationCenterDelegate {
-    private static let approveAction = "APPROVE"
-    private static let denyAction = "DENY"
-    private static let reviewAction = "REVIEW"
-    private static let sessionAction = "ALLOW_SESSION"
-
     let model = AppModel()
 
     func applicationDidFinishLaunching() {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
 
-        let approve = UNNotificationAction(identifier: Self.approveAction, title: "Yes")
-        let session = UNNotificationAction(identifier: Self.sessionAction, title: "Yes, for this session")
-        let deny = UNNotificationAction(identifier: Self.denyAction, title: "No", options: .destructive)
+        // Only someone able to unlock this watch can approve from it.
+        let approve = UNNotificationAction(
+            identifier: NotificationAnswer.approveAction,
+            title: "Yes",
+            options: .authenticationRequired
+        )
+        let session = UNNotificationAction(
+            identifier: NotificationAnswer.sessionAction,
+            title: "Yes, for this session",
+            options: .authenticationRequired
+        )
+        let deny = UNNotificationAction(identifier: NotificationAnswer.denyAction, title: "No", options: .destructive)
         // Opens the app, where the answers wait after the end of the text.
-        let review = UNNotificationAction(identifier: Self.reviewAction, title: "Read & Approve", options: .foreground)
+        let review = UNNotificationAction(
+            identifier: NotificationAnswer.reviewAction,
+            title: "Read & Approve",
+            options: .foreground
+        )
         center.setNotificationCategories([
-            // The relay picks a QUICK category only when the notification can show the whole
+            // The computer picks a QUICK category only when the notification can show the whole
             // request, and the session one only when it can also show what that answer allows.
-            UNNotificationCategory(identifier: "TAPAPPROVE_QUICK", actions: [approve, deny], intentIdentifiers: []),
+            UNNotificationCategory(identifier: SealedPreview.quickCategory, actions: [approve, deny], intentIdentifiers: []),
             UNNotificationCategory(
-                identifier: "TAPAPPROVE_QUICK_SESSION",
+                identifier: SealedPreview.quickSessionCategory,
                 actions: [approve, session, deny],
                 intentIdentifiers: []
             ),
-            UNNotificationCategory(identifier: "TAPAPPROVE_REVIEW", actions: [review, deny], intentIdentifiers: []),
+            UNNotificationCategory(identifier: SealedPreview.reviewCategory, actions: [review, deny], intentIdentifiers: []),
         ])
     }
 
@@ -65,15 +73,16 @@ final class AppDelegate: NSObject, WKApplicationDelegate, UNUserNotificationCent
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        let action = response.actionIdentifier
-        guard let requestID = response.notification.request.content.userInfo["requestId"] as? String else { return }
-        let answer: Answer
-        switch action {
-        case Self.approveAction: answer = Answer(decision: .allow)
-        case Self.sessionAction: answer = Answer(decision: .allow, option: 0)
-        case Self.denyAction: answer = Answer(decision: .deny)
-        default: return
+        let answer = NotificationAnswer.resolve(
+            action: response.actionIdentifier,
+            content: response.notification.request.content,
+            keys: TokenStore.loadKeys(),
+            shownFor: Date.now.timeIntervalSince(response.notification.date)
+        )
+        switch answer {
+        case .send(let requestID, let answer): await model.decide(requestID: requestID, answer: answer)
+        case .refuse: await model.refuseNotification()
+        case .nothing: break
         }
-        await model.decide(requestID: requestID, answer: answer)
     }
 }

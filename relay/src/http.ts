@@ -48,7 +48,16 @@ export async function sha256Hex(text: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-/** Clips free text from clients. Returns undefined for anything that is not a non-empty string. */
-export function clipped(value: unknown, maxLength: number): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value.slice(0, maxLength) : undefined;
+export interface PairKey {
+  publicKey: string;
+  tag: string;
+}
+
+const KEY_TEXT = /^[A-Za-z0-9+/]{1,64}={0,2}$/;
+
+/** Reads one side of the key exchange. The relay only carries it and cannot use it. */
+export function pairKey(body: Record<string, unknown>): PairKey | null {
+  const { publicKey, tag } = body;
+  if (typeof publicKey !== 'string' || typeof tag !== 'string') return null;
+  return KEY_TEXT.test(publicKey) && KEY_TEXT.test(tag) ? { publicKey, tag } : null;
 }

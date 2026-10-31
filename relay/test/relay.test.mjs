@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 // Runs against the real Worker and Durable Object under `wrangler dev`.
 
 import assert from 'node:assert/strict';
@@ -63,10 +64,13 @@ async function api(method, path, { token, body, raw } = {}) {
   return { status: response.status, data: await response.json().catch(() => ({})) };
 }
 
+const CLI_KEY = { publicKey: Buffer.alloc(32, 7).toString('base64'), tag: Buffer.alloc(32, 8).toString('base64') };
+const WATCH_KEY = { publicKey: Buffer.alloc(32, 9).toString('base64'), tag: Buffer.alloc(32, 10).toString('base64') };
+
 async function pairedChannel() {
-  const started = await api('POST', '/v1/pair/start', { body: { name: 'My Watch' } });
+  const started = await api('POST', '/v1/pair/start', { body: {} });
   assert.equal(started.status, 200);
-  const claimed = await api('POST', '/v1/pair/claim', { body: { code: started.data.code, name: 'MacBook' } });
+  const claimed = await api('POST', '/v1/pair/claim', { body: { code: started.data.code, ...CLI_KEY } });
   assert.equal(claimed.status, 200);
   return { watch: started.data.watchToken, cli: claimed.data.cliToken, code: started.data.code };
 }
@@ -74,7 +78,7 @@ async function pairedChannel() {
 const newRequest = (cli, extra = {}) =>
   api('POST', '/v1/requests', {
     token: cli,
-    body: { tool: 'Bash', title: 'Run command', detail: 'ls -la', project: 'shop', ttlSeconds: 60, ...extra },
+    body: { id: randomUUID(), sealed: 'c2VhbGVk', preview: 'cHJldmlldw==', ttlSeconds: 60, ...extra },
   });
 
 // Pairing
@@ -82,35 +86,72 @@ const newRequest = (cli, extra = {}) =>
 test('pair/start works with no body and returns a readable code', async () => {
   const { status, data } = await api('POST', '/v1/pair/start');
   assert.equal(status, 200);
-  assert.match(data.code, /^[A-HJ-NP-Z2-9]{6}$/);
+  assert.match(data.code, /^[A-HJ-NP-Z2-9]{4}$/);
   assert.ok(data.watchToken);
   assert.ok(data.expiresIn > 0);
 });
 
-test('the watch sees the pairing complete, with the computer name', async () => {
+test('the watch sees the pairing complete, and the relay holds no device name', async () => {
   const started = await api('POST', '/v1/pair/start');
   const before = await api('GET', '/v1/status', { token: started.data.watchToken });
   assert.equal(before.status, 200);
   assert.equal(before.data.paired, false);
 
-  await api('POST', '/v1/pair/claim', { body: { code: started.data.code, name: 'MacBook' } });
+  await api('POST', '/v1/pair/claim', { body: { code: started.data.code, ...CLI_KEY } });
   const afterClaim = await api('GET', '/v1/status', { token: started.data.watchToken });
   assert.equal(afterClaim.data.paired, true);
-  assert.equal(afterClaim.data.peerName, 'MacBook');
+  assert.equal('peerName' in afterClaim.data, false);
   assert.equal(afterClaim.data.role, 'watch');
 });
 
 test('a code works only once', async () => {
   const { code } = await pairedChannel();
-  const second = await api('POST', '/v1/pair/claim', { body: { code, name: 'Intruder' } });
+  const second = await api('POST', '/v1/pair/claim', { body: { code, ...CLI_KEY } });
   assert.equal(second.status, 404);
   assert.equal(second.data.error, 'invalid_code');
 });
 
 test('an unknown code is rejected', async () => {
-  const { status } = await api('POST', '/v1/pair/claim', { body: { code: 'ZZZZZZ', name: 'x' } });
+  const { status } = await api('POST', '/v1/pair/claim', { body: { code: 'ZZZZ', ...CLI_KEY } });
   assert.equal(status, 404);
 });
+
+test('the two public keys cross over the relay, each one once', async () => {
+  const started = await api('POST', '/v1/pair/start');
+  const { code, watchToken: watch } = started.data;
+  const { cliToken: cli } = (await api('POST', '/v1/pair/claim', { body: { code, ...CLI_KEY } })).data;
+
+  assert.deepEqual((await api('GET', '/v1/status', { token: watch })).data.peerKey, CLI_KEY);
+  assert.equal((await api('GET', '/v1/status', { token: cli })).data.peerKey, undefined);
+
+  assert.equal((await api('GET', '/v1/pair/key', { token: cli })).data.key, null);
+  assert.equal((await api('PUT', '/v1/pair/key', { token: watch, body: WATCH_KEY })).status, 200);
+  assert.deepEqual((await api('GET', '/v1/pair/key', { token: cli })).data.key, WATCH_KEY);
+  assert.equal((await api('PUT', '/v1/pair/key', { token: watch, body: CLI_KEY })).status, 409);
+  assert.deepEqual((await api('GET', '/v1/pair/key', { token: cli })).data.key, WATCH_KEY);
+});
+
+test('only the watch can publish its key and only the computer can read it', async () => {
+  const { cli, watch } = await pairedChannel();
+  assert.equal((await api('PUT', '/v1/pair/key', { token: cli, body: WATCH_KEY })).status, 403);
+  assert.equal((await api('GET', '/v1/pair/key', { token: watch })).status, 403);
+});
+
+for (const [name, key] of [
+  ['no key', {}],
+  ['a key that is not text', { publicKey: 5, tag: CLI_KEY.tag }],
+  ['no tag', { publicKey: CLI_KEY.publicKey }],
+  ['a key that is too long', { publicKey: 'A'.repeat(500), tag: CLI_KEY.tag }],
+  ['a tag that is not base64', { publicKey: CLI_KEY.publicKey, tag: '<script>' }],
+]) {
+  test(`a claim with ${name} is refused and the code still works`, async () => {
+    const { code } = (await api('POST', '/v1/pair/start')).data;
+    const refused = await api('POST', '/v1/pair/claim', { body: { code, ...key } });
+    assert.equal(refused.status, 400);
+    assert.equal(refused.data.error, 'invalid_key');
+    assert.equal((await api('POST', '/v1/pair/claim', { body: { code, ...CLI_KEY } })).status, 200);
+  });
+}
 
 test('a malformed claim body is a 400, not a crash', async () => {
   assert.equal((await api('POST', '/v1/pair/claim', { raw: '{nope' })).status, 400);
@@ -132,7 +173,7 @@ test('requests need a valid token', async () => {
 test('only the watch can decide, so a compromised computer cannot approve itself', async () => {
   const { cli } = await pairedChannel();
   const { data } = await newRequest(cli);
-  const attempt = await api('POST', `/v1/requests/${data.id}/decision`, { token: cli, body: { decision: 'allow' } });
+  const attempt = await api('POST', `/v1/requests/${data.id}/decision`, { token: cli, body: { decision: 'allow', proof: 'p' } });
   assert.equal(attempt.status, 403);
   assert.equal((await api('GET', `/v1/requests/${data.id}`, { token: cli })).data.status, 'pending');
 });
@@ -147,7 +188,7 @@ test('one pairing cannot see or decide requests of another', async () => {
   const b = await pairedChannel();
   const { data } = await newRequest(a.cli);
   assert.equal((await api('GET', `/v1/requests/${data.id}`, { token: b.cli })).status, 404);
-  assert.equal((await api('POST', `/v1/requests/${data.id}/decision`, { token: b.watch, body: { decision: 'allow' } })).status, 404);
+  assert.equal((await api('POST', `/v1/requests/${data.id}/decision`, { token: b.watch, body: { decision: 'allow', proof: 'p' } })).status, 404);
   assert.deepEqual((await api('GET', '/v1/requests', { token: b.watch })).data.requests, []);
 });
 
@@ -160,7 +201,7 @@ test('revoking from either side kills both tokens', async () => {
 
 // Request lifecycle
 
-test('a new request reaches the watch with everything it displays', async () => {
+test('a new request reaches the watch sealed, and nothing else about it', async () => {
   const { cli, watch } = await pairedChannel();
   const created = await newRequest(cli);
   assert.equal(created.status, 200);
@@ -170,10 +211,8 @@ test('a new request reaches the watch with everything it displays', async () => 
   assert.equal(data.requests.length, 1);
   const [request] = data.requests;
   assert.equal(request.id, created.data.id);
-  assert.equal(request.title, 'Run command');
-  assert.equal(request.detail, 'ls -la');
-  assert.equal(request.project, 'shop');
-  assert.equal(request.tool, 'Bash');
+  assert.equal(request.sealed, 'c2VhbGVk');
+  assert.deepEqual(Object.keys(request).sort(), ['createdAt', 'expiresAt', 'id', 'sealed']);
   assert.ok(request.expiresAt > data.serverTime);
 });
 
@@ -184,7 +223,7 @@ for (const decision of ['allow', 'deny']) {
     const started = Date.now();
     const poll = api('GET', `/v1/requests/${data.id}?wait=20`, { token: cli });
     await new Promise((resolve) => setTimeout(resolve, 300));
-    const decided = await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body: { decision } });
+    const decided = await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body: { decision, proof: 'p' } });
     assert.equal(decided.status, 200);
     const { data: result } = await poll;
     assert.equal(result.status, decision);
@@ -204,7 +243,7 @@ test('a long-poll with no decision returns pending after its wait', async () => 
 test('a decided request leaves the watch list', async () => {
   const { cli, watch } = await pairedChannel();
   const { data } = await newRequest(cli);
-  await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body: { decision: 'allow' } });
+  await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body: { decision: 'allow', proof: 'p' } });
   assert.deepEqual((await api('GET', '/v1/requests', { token: watch })).data.requests, []);
 });
 
@@ -212,9 +251,9 @@ test('the first decision wins and a same-answer retry is harmless', async () => 
   const { cli, watch } = await pairedChannel();
   const { data } = await newRequest(cli);
   const path = `/v1/requests/${data.id}/decision`;
-  await api('POST', path, { token: watch, body: { decision: 'deny' } });
-  assert.equal((await api('POST', path, { token: watch, body: { decision: 'deny' } })).status, 200);
-  const flip = await api('POST', path, { token: watch, body: { decision: 'allow' } });
+  await api('POST', path, { token: watch, body: { decision: 'deny', proof: 'p' } });
+  assert.equal((await api('POST', path, { token: watch, body: { decision: 'deny', proof: 'p' } })).status, 200);
+  const flip = await api('POST', path, { token: watch, body: { decision: 'allow', proof: 'p' } });
   assert.equal(flip.status, 409);
   assert.equal(flip.data.status, 'deny');
   assert.equal((await api('GET', `/v1/requests/${data.id}`, { token: cli })).data.status, 'deny');
@@ -231,7 +270,7 @@ test('an expired request cannot be approved late', async () => {
   const { cli, watch } = await pairedChannel();
   const { data } = await newRequest(cli, { ttlSeconds: 1 });
   await new Promise((resolve) => setTimeout(resolve, 1200));
-  const late = await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body: { decision: 'allow' } });
+  const late = await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body: { decision: 'allow', proof: 'p' } });
   assert.equal(late.status, 409);
   assert.equal(late.data.status, 'expired');
   assert.equal((await api('GET', `/v1/requests/${data.id}`, { token: cli })).data.status, 'expired');
@@ -252,7 +291,7 @@ test('a cancelled request disappears and cannot be approved', async () => {
   const { data } = await newRequest(cli);
   assert.equal((await api('DELETE', `/v1/requests/${data.id}`, { token: cli })).status, 200);
   assert.deepEqual((await api('GET', '/v1/requests', { token: watch })).data.requests, []);
-  const late = await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body: { decision: 'allow' } });
+  const late = await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body: { decision: 'allow', proof: 'p' } });
   assert.equal(late.status, 409);
   assert.equal(late.data.status, 'cancelled');
 });
@@ -260,121 +299,95 @@ test('a cancelled request disappears and cannot be approved', async () => {
 test('cancelling cannot overturn a decision', async () => {
   const { cli, watch } = await pairedChannel();
   const { data } = await newRequest(cli);
-  await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body: { decision: 'allow' } });
+  await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body: { decision: 'allow', proof: 'p' } });
   await api('DELETE', `/v1/requests/${data.id}`, { token: cli });
   assert.equal((await api('GET', `/v1/requests/${data.id}`, { token: cli })).data.status, 'allow');
 });
 
-test('oversized text is clipped so a runaway command cannot bloat storage', async () => {
+test('text sent in the clear is dropped, even if a client sends it', async () => {
   const { cli, watch } = await pairedChannel();
-  await newRequest(cli, { title: 't'.repeat(5000), detail: 'd'.repeat(150_000) });
+  await newRequest(cli, { tool: 'Bash', title: 'Run', detail: 'rm -rf /', project: 'shop', options: ['one'] });
   const [request] = (await api('GET', '/v1/requests', { token: watch })).data.requests;
-  assert.ok(request.title.length <= 200);
-  assert.ok(request.detail.length <= 120_000);
+  assert.deepEqual(Object.keys(request).sort(), ['createdAt', 'expiresAt', 'id', 'sealed']);
 });
 
-test('a long request reaches the watch whole and can be approved', async () => {
+test('a long sealed request reaches the watch whole', async () => {
   const { cli, watch } = await pairedChannel();
-  const detail = `echo start; ${'d'.repeat(100_000)}; echo end`;
-  const { data } = await newRequest(cli, { detail });
-  const [request] = (await api('GET', '/v1/requests', { token: watch })).data.requests;
-  assert.equal(request.detail, detail);
-  assert.equal(request.truncated, false);
-  const approve = await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body: { decision: 'allow' } });
-  assert.equal(approve.status, 200);
-  assert.equal((await api('GET', `/v1/requests/${data.id}`, { token: cli })).data.status, 'allow');
+  const sealed = 'A'.repeat(300_000);
+  assert.equal((await newRequest(cli, { sealed })).status, 200);
+  assert.equal((await api('GET', '/v1/requests', { token: watch })).data.requests[0].sealed, sealed);
 });
 
-test('session answers reach the watch, limited in number and length', async () => {
-  const { cli, watch } = await pairedChannel();
-  await newRequest(cli, { options: ['one', 'two', 't'.repeat(500), 'four', 5] });
-  const [request] = (await api('GET', '/v1/requests', { token: watch })).data.requests;
-  assert.equal(request.options.length, 3);
-  assert.deepEqual(request.options.slice(0, 2), ['one', 'two']);
-  assert.ok(request.options[2].length <= 200);
+test('a request past the size limit is refused, not cut', async () => {
+  const { cli } = await pairedChannel();
+  assert.equal((await newRequest(cli, { sealed: 'A'.repeat(600_000) })).status, 413);
 });
 
-test('a request without session answers has an empty list', async () => {
-  const { cli, watch } = await pairedChannel();
-  await newRequest(cli);
-  const [request] = (await api('GET', '/v1/requests', { token: watch })).data.requests;
-  assert.deepEqual(request.options, []);
+test('a request needs sealed text and a well-formed id of its own', async () => {
+  const { cli } = await pairedChannel();
+  assert.equal((await newRequest(cli, { sealed: undefined })).status, 400);
+  assert.equal((await newRequest(cli, { sealed: '' })).status, 400);
+  assert.equal((await newRequest(cli, { id: 'not-an-id' })).status, 400);
+  assert.equal((await newRequest(cli, { id: '../meta' })).status, 400);
+  const { data } = await newRequest(cli);
+  assert.equal((await newRequest(cli, { id: data.id })).status, 409);
 });
 
-test('the chosen session answer reaches the computer', async () => {
+test('the answer reaches the computer exactly as the watch sent it', async () => {
   const { cli, watch } = await pairedChannel();
-  const { data } = await newRequest(cli, { options: ['one', 'two'] });
-  const body = { decision: 'allow', option: 1 };
+  const { data } = await newRequest(cli);
+  const body = { decision: 'allow', option: 1, proof: 'proof-text' };
   assert.equal((await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body })).status, 200);
   const result = (await api('GET', `/v1/requests/${data.id}`, { token: cli })).data;
   assert.equal(result.status, 'allow');
   assert.equal(result.option, 1);
+  assert.equal(result.proof, 'proof-text');
 });
 
-test('a session answer that was never offered is refused and the request stays open', async () => {
+test('an answer without a proof is refused and the request stays open', async () => {
   const { cli, watch } = await pairedChannel();
-  const { data } = await newRequest(cli, { options: ['one'] });
+  const { data } = await newRequest(cli);
   const path = `/v1/requests/${data.id}/decision`;
-  for (const option of [1, -1, 0.5, 'one']) {
-    const answer = await api('POST', path, { token: watch, body: { decision: 'allow', option } });
+  for (const proof of [undefined, '', 5, 'p'.repeat(500)]) {
+    const answer = await api('POST', path, { token: watch, body: { decision: 'allow', proof } });
+    assert.equal(answer.status, 400);
+    assert.equal(answer.data.error, 'invalid_proof');
+  }
+  assert.equal((await api('GET', `/v1/requests/${data.id}`, { token: cli })).data.status, 'pending');
+});
+
+test('an odd session answer is refused and the request stays open', async () => {
+  const { cli, watch } = await pairedChannel();
+  const { data } = await newRequest(cli);
+  const path = `/v1/requests/${data.id}/decision`;
+  for (const option of [10, -1, 0.5, 'one']) {
+    const answer = await api('POST', path, { token: watch, body: { decision: 'allow', option, proof: 'p' } });
     assert.equal(answer.status, 400);
     assert.equal(answer.data.error, 'invalid_option');
   }
   assert.equal((await api('GET', `/v1/requests/${data.id}`, { token: cli })).data.status, 'pending');
 });
 
-test('a denial can say what to do instead, and the text is limited', async () => {
+test('a denial can carry sealed instructions, within a limit', async () => {
   const { cli, watch } = await pairedChannel();
-  const { data } = await newRequest(cli);
-  const body = { decision: 'deny', message: 'm'.repeat(5000) };
-  assert.equal((await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body })).status, 200);
-  const result = (await api('GET', `/v1/requests/${data.id}`, { token: cli })).data;
-  assert.equal(result.status, 'deny');
-  assert.equal(result.message.length, 1000);
+  const first = (await newRequest(cli)).data;
+  const body = { decision: 'deny', proof: 'p', sealedMessage: 'c2FpZA==' };
+  assert.equal((await api('POST', `/v1/requests/${first.id}/decision`, { token: watch, body })).status, 200);
+  assert.equal((await api('GET', `/v1/requests/${first.id}`, { token: cli })).data.sealedMessage, 'c2FpZA==');
+
+  const second = (await newRequest(cli)).data;
+  const tooLong = { decision: 'deny', proof: 'p', sealedMessage: 'A'.repeat(9000) };
+  const refused = await api('POST', `/v1/requests/${second.id}/decision`, { token: watch, body: tooLong });
+  assert.equal(refused.status, 400);
+  assert.equal(refused.data.error, 'invalid_message');
 });
 
 test('an approval carries no message', async () => {
   const { cli, watch } = await pairedChannel();
   const { data } = await newRequest(cli);
-  await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body: { decision: 'allow', message: 'x' } });
-  assert.equal((await api('GET', `/v1/requests/${data.id}`, { token: cli })).data.message, undefined);
-});
-
-test('a cut request reaches the watch marked as cut', async () => {
-  const { cli, watch } = await pairedChannel();
-  await newRequest(cli, { truncated: true });
-  const [request] = (await api('GET', '/v1/requests', { token: watch })).data.requests;
-  assert.equal(request.truncated, true);
-});
-
-test('text the relay has to clip is marked as cut even if the client did not say so', async () => {
-  const { cli, watch } = await pairedChannel();
-  await newRequest(cli, { detail: 'd'.repeat(150_000) });
-  const [request] = (await api('GET', '/v1/requests', { token: watch })).data.requests;
-  assert.equal(request.truncated, true);
-});
-
-test('a complete request is not marked as cut', async () => {
-  const { cli, watch } = await pairedChannel();
-  await newRequest(cli);
-  const [request] = (await api('GET', '/v1/requests', { token: watch })).data.requests;
-  assert.equal(request.truncated, false);
-});
-
-test('a cut request cannot be approved, even by a watch that ignores the flag', async () => {
-  const { cli, watch } = await pairedChannel();
-  const { data } = await newRequest(cli, { truncated: true });
-  const path = `/v1/requests/${data.id}/decision`;
-  const approve = await api('POST', path, { token: watch, body: { decision: 'allow' } });
-  assert.equal(approve.status, 409);
-  assert.equal(approve.data.error, 'too_long_to_approve');
-  assert.equal((await api('GET', `/v1/requests/${data.id}`, { token: cli })).data.status, 'pending');
-  assert.equal((await api('POST', path, { token: watch, body: { decision: 'deny' } })).status, 200);
-});
-
-test('a request without a tool is rejected', async () => {
-  const { cli } = await pairedChannel();
-  assert.equal((await api('POST', '/v1/requests', { token: cli, body: { title: 'x' } })).status, 400);
+  const body = { decision: 'allow', proof: 'p', sealedMessage: 'c2FpZA==' };
+  await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body });
+  assert.equal((await api('GET', `/v1/requests/${data.id}`, { token: cli })).data.sealedMessage, undefined);
 });
 
 test('a flood of pending requests is refused past the cap', async () => {
@@ -438,11 +451,11 @@ test('guessing pairing codes gets cut off, so codes cannot be brute forced', asy
 });
 
 test('one client hitting the limit does not block another', async () => {
-  await hammer('/v1/pair/claim', { code: 'ZZZZZZ' }, '203.0.113.11');
+  await hammer('/v1/pair/claim', { code: 'ZZZZ', ...CLI_KEY }, '203.0.113.11');
   const other = await fetch(`${base}/v1/pair/claim`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'cf-connecting-ip': '203.0.113.12' },
-    body: JSON.stringify({ code: 'ZZZZZZ' }),
+    body: JSON.stringify({ code: 'ZZZZ', ...CLI_KEY }),
   });
   assert.equal(other.status, 404);
 });

@@ -9,7 +9,7 @@ const KEY_P8 = privateKey.export({ type: 'pkcs8', format: 'pem' });
 const ENV = { APNS_KEY_P8: KEY_P8, APNS_KEY_ID: 'KEY1234567', APNS_TEAM_ID: 'TEAM123456', APNS_TOPIC: 'com.example.app' };
 const CONFIG = apnsConfig(ENV);
 const DEVICE = { token: 'a'.repeat(64), env: 'production' };
-const SUMMARY = { id: 'r1', title: 'Run command', detail: 'ls -la', project: 'shop' };
+const SUMMARY = { id: 'r1', preview: 'c2VhbGVk' };
 
 const decode = (part) => JSON.parse(Buffer.from(part, 'base64url').toString());
 
@@ -58,37 +58,19 @@ test('a key pasted with literal \\n sequences still signs', async () => {
   assert.equal((await buildJwt(flattened, 1_800_000_000)).split('.').length, 3);
 });
 
-test('a short request can be approved straight from the notification', () => {
-  const { aps, requestId } = buildPayload(SUMMARY);
-  assert.equal(requestId, 'r1');
-  assert.equal(aps.category, 'TAPAPPROVE_QUICK');
-  assert.equal(aps.alert.title, 'Run command');
-  assert.equal(aps.alert.subtitle, 'shop');
-  assert.equal(aps.alert.body, 'ls -la');
+test('the push says nothing about the request until the watch opens it', () => {
+  const payload = buildPayload({ id: 'r1', preview: 'c2VhbGVk' });
+  assert.equal(payload.requestId, 'r1');
+  assert.equal(payload.preview, 'c2VhbGVk');
+  assert.equal(payload.aps['mutable-content'], 1);
+  assert.equal(payload.aps.alert.title, 'Tapapprove');
+  assert.equal(payload.aps.category, 'TAPAPPROVE_REVIEW');
 });
 
-test('a request too long for the notification must be opened, so no one approves an unseen tail', () => {
-  const { aps } = buildPayload({ ...SUMMARY, detail: `ls; ${'x'.repeat(400)}; rm -rf /` });
-  assert.equal(aps.category, 'TAPAPPROVE_REVIEW');
-  assert.ok(!aps.alert.body.includes('rm -rf /'));
-  assert.ok(aps.alert.body.length <= 180);
-});
-
-test('a short request can be allowed for the session from the notification, which names what that allows', () => {
-  const { aps } = buildPayload({ ...SUMMARY, options: ['Yes, allow ls for this session'] });
-  assert.equal(aps.category, 'TAPAPPROVE_QUICK_SESSION');
-  assert.match(aps.alert.body, /ls -la/);
-  assert.match(aps.alert.body, /Yes, allow ls for this session/);
-});
-
-test('a session answer that does not fit beside the request must be opened', () => {
-  const { aps } = buildPayload({ ...SUMMARY, detail: 'x'.repeat(150), options: ['Yes, allow ls for this session'] });
-  assert.equal(aps.category, 'TAPAPPROVE_REVIEW');
-  assert.doesNotMatch(aps.alert.body, /this session/);
-});
-
-test('a short request marked as cut still must be opened, since the tail is hidden', () => {
-  assert.equal(buildPayload({ ...SUMMARY, truncated: true }).aps.category, 'TAPAPPROVE_REVIEW');
+test('a preview too big for a push is left out, and the generic text still works', () => {
+  const payload = buildPayload({ id: 'r1', preview: 'A'.repeat(4000) });
+  assert.equal(payload.preview, undefined);
+  assert.equal(payload.aps.category, 'TAPAPPROVE_REVIEW');
 });
 
 for (const [env, host] of [['production', 'api.push.apple.com'], ['sandbox', 'api.sandbox.push.apple.com']]) {

@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { MAX_DETAIL } from '../lib/describe.mjs';
-import { DEAD_RELAY, fakeRelay, run, tempHome, writeConfig } from './helpers.mjs';
+import { DEAD_RELAY, fakeRelay, openedRequest, run, tempHome, writeConfig } from './helpers.mjs';
 
 const PROMPT = JSON.stringify({
   session_id: 's1',
@@ -22,6 +22,15 @@ async function hook({ decide, createStatus, waitSeconds = 3, stdin = PROMPT, onS
   await relay.close();
   return { ...result, relay, home };
 }
+
+const withSuggestion = JSON.stringify({
+  hook_event_name: 'PermissionRequest',
+  tool_name: 'Bash',
+  tool_input: { command: 'npm run build' },
+  permission_suggestions: [
+    { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm run *' }], behavior: 'allow', destination: 'localSettings' },
+  ],
+});
 
 const asksForPrompt = ({ code, stdout }) => {
   assert.equal(code, 0);
@@ -44,14 +53,44 @@ test('a denial from the watch denies the tool and tells Claude why', async () =>
   assert.match(decision.message, /Apple Watch/);
 });
 
-test('sends the masked summary and the project name, with the CLI token', async () => {
+test('sends the whole request and the project name, with the CLI token', async () => {
   const { relay } = await hook({ decide: () => 'allow' });
   const create = relay.calls.find((call) => call.path === '/v1/requests');
   assert.equal(create.auth, 'Bearer ch1.cli-secret');
-  assert.equal(create.body.tool, 'Bash');
-  assert.equal(create.body.project, 'shop');
-  assert.match(create.body.detail, /ls -la/);
-  assert.ok(!create.body.detail.includes('abc'));
+  const request = openedRequest(relay);
+  assert.equal(request.tool, 'Bash');
+  assert.equal(request.project, 'shop');
+  assert.match(request.detail, /ls -la/);
+});
+
+test('the relay sees none of the request in the clear', async () => {
+  const { relay } = await hook({ decide: () => 'allow', stdin: withSuggestion });
+  const sent = JSON.stringify(relay.calls.find((call) => call.path === '/v1/requests').body);
+  for (const text of ['npm run', 'Bash', 'Run command', 'this session']) assert.ok(!sent.includes(text), text);
+});
+
+for (const [name, answer] of [
+  ['an approval with a wrong proof', { status: 'allow', proof: 'made-up' }],
+  ['an approval with no proof', { status: 'allow', proof: null }],
+  ['a denial with a wrong proof', { status: 'deny', proof: 'made-up' }],
+  ['a session answer with a wrong proof', { status: 'allow', option: 0, proof: 'made-up' }],
+  ['a message that does not open', { status: 'deny', sealedMessage: 'bm90IHNlYWxlZA==', proof: 'made-up' }],
+]) {
+  test(`${name} from the relay falls back to the prompt and is logged`, async () => {
+    const result = await hook({ decide: () => answer, stdin: withSuggestion });
+    asksForPrompt(result);
+    assert.match(readFileSync(join(result.home, '.tapapprove', 'hook.log'), 'utf8'), /outcome=forged/);
+    assert.ok(result.relay.calls.some((call) => call.method === 'DELETE'));
+  });
+}
+
+test('a pairing from before encryption stays out of the way and sends nothing', async () => {
+  const relay = await fakeRelay({ decide: () => 'allow' });
+  const home = tempHome();
+  writeConfig(home, { relay: relay.url, token: 'ch1.cli-secret', keys: null });
+  asksForPrompt(await run(['hook'], { home, stdin: PROMPT }));
+  await relay.close();
+  assert.equal(relay.calls.length, 0);
 });
 
 const promptFor = (command) =>
@@ -60,24 +99,12 @@ const promptFor = (command) =>
 test('sends a long command whole', async () => {
   const command = `echo start; ${'a'.repeat(50_000)}; echo end`;
   const { relay } = await hook({ decide: () => 'allow', stdin: promptFor(command) });
-  const { body } = relay.calls.find((call) => call.path === '/v1/requests');
-  assert.equal(body.detail, command);
-  assert.equal(body.truncated, false);
-});
-
-const withSuggestion = JSON.stringify({
-  hook_event_name: 'PermissionRequest',
-  tool_name: 'Bash',
-  tool_input: { command: 'npm run build' },
-  permission_suggestions: [
-    { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm run *' }], behavior: 'allow', destination: 'localSettings' },
-  ],
+  assert.equal(openedRequest(relay).detail, command);
 });
 
 test('offers Claude suggestions to the watch as session answers', async () => {
   const { relay } = await hook({ decide: () => 'deny', stdin: withSuggestion });
-  const { body } = relay.calls.find((call) => call.path === '/v1/requests');
-  assert.deepEqual(body.options, ['Yes, allow npm run * for this session']);
+  assert.deepEqual(openedRequest(relay).options, ['Yes, allow npm run * for this session']);
 });
 
 test('a session answer applies the suggestion for this session only', async () => {
@@ -129,7 +156,7 @@ test('a rejected token falls back to the normal prompt', async () => {
 test('no decision in time falls back to the prompt and cancels on the relay', async () => {
   const result = await hook({ decide: () => 'pending', waitSeconds: 1 });
   asksForPrompt(result);
-  assert.ok(result.relay.calls.some((call) => call.method === 'DELETE' && call.path === '/v1/requests/r1'));
+  assert.ok(result.relay.calls.some((call) => call.method === 'DELETE' && call.path.startsWith('/v1/requests/')));
 });
 
 for (const status of ['expired', 'cancelled']) {
