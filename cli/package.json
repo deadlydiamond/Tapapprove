@@ -1,6 +1,6 @@
 {
   "name": "tapapprove",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Approve Claude Code permission prompts from your Apple Watch",
   "license": "MIT",
   "keywords": [

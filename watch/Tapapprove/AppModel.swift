@@ -3,15 +3,6 @@ import Observation
 import UserNotifications
 import WatchKit
 
-struct PendingRequest: Identifiable, Equatable {
-    let id: String
-    let title: String
-    let detail: String
-    let project: String?
-    let expiresAt: Date
-    let isTruncated: Bool
-}
-
 @MainActor
 @Observable
 final class AppModel {
@@ -26,6 +17,7 @@ final class AppModel {
     private(set) var requests: [PendingRequest] = []
     private(set) var isOffline = false
     private(set) var notice: String?
+    private(set) var outcome: Outcome?
 
     /// Held in memory until the computer claims the code, so an abandoned pairing leaves nothing behind.
     private var pairingToken: String?
@@ -48,17 +40,23 @@ final class AppModel {
         phase = .loading
     }
 
-    func decide(requestID: String, decision: Decision) async {
+    func decide(requestID: String, answer: Answer) async {
         guard let token = TokenStore.load(), inFlight.insert(requestID).inserted else { return }
         defer { inFlight.remove(requestID) }
         requests.removeAll { $0.id == requestID }
+        outcome = Outcome(answer: answer)
         do {
-            try await RelayClient(token: token).decide(requestID: requestID, decision: decision)
-            WKInterfaceDevice.current().play(decision == .allow ? .success : .failure)
+            try await RelayClient(token: token).decide(requestID: requestID, answer: answer)
+            outcome?.isSending = false
+            WKInterfaceDevice.current().play(answer.decision == .allow ? .success : .failure)
+            try? await Task.sleep(for: Config.outcomeDuration)
+            outcome = nil
         } catch RelayError.alreadyClosed {
+            outcome = nil
             show(notice: "That request already ended.")
         } catch {
             // The request stays open on the relay, so the next poll brings it back.
+            outcome = nil
             show(notice: "Could not send that. Try again.")
         }
     }
@@ -147,12 +145,14 @@ final class AppModel {
             .map { request in
                 PendingRequest(
                     id: request.id,
+                    tool: request.tool,
                     title: request.title,
                     detail: request.detail,
                     project: request.project,
                     // Count down from the relay's clock, so a skewed watch clock cannot mislead.
                     expiresAt: now.addingTimeInterval((request.expiresAt - list.serverTime) / 1000),
-                    isTruncated: request.truncated
+                    isTruncated: request.truncated,
+                    sessionOptions: request.options ?? []
                 )
             }
         if fresh.contains(where: { !known.contains($0.id) }) {

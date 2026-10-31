@@ -3,10 +3,44 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { MAX_DETAIL } from '../lib/describe.mjs';
 import { DEAD_RELAY, fakeRelay, run, tempHome, writeConfig } from './helpers.mjs';
 
 const configPath = (home) => join(home, '.tapapprove', 'config.json');
 const settingsPath = (home) => join(home, '.claude', 'settings.json');
+
+test('test does not send a command too long for the watch', async () => {
+  const relay = await fakeRelay({ decide: () => 'allow' });
+  const home = tempHome();
+  writeConfig(home, { relay: relay.url, token: 'ch1.cli-secret' });
+  const { code, stdout } = await run(['test', '--command', 'a'.repeat(MAX_DETAIL + 1)], { home });
+  await relay.close();
+  assert.equal(code, 2);
+  assert.match(stdout, /too long/i);
+  assert.equal(relay.calls.some((call) => call.path === '/v1/requests'), false);
+});
+
+test('test can offer a session answer and reports when it is chosen', async () => {
+  const relay = await fakeRelay({ decide: () => ({ status: 'allow', option: 0 }) });
+  const home = tempHome();
+  writeConfig(home, { relay: relay.url, token: 'ch1.cli-secret' });
+  const label = 'Yes, allow ls for this session';
+  const { code, stdout } = await run(['test', '--session-label', label], { home });
+  await relay.close();
+  assert.equal(code, 0);
+  assert.match(stdout, /for this session/);
+  assert.deepEqual(relay.calls.find((call) => call.path === '/v1/requests').body.options, [label]);
+});
+
+test('test prints what the watch said to do instead', async () => {
+  const relay = await fakeRelay({ decide: () => ({ status: 'deny', message: 'use pnpm instead' }) });
+  const home = tempHome();
+  writeConfig(home, { relay: relay.url, token: 'ch1.cli-secret' });
+  const { code, stdout } = await run(['test'], { home });
+  await relay.close();
+  assert.equal(code, 1);
+  assert.match(stdout, /use pnpm instead/);
+});
 
 test('pair claims the code, saves the token privately and installs the hook', async () => {
   const relay = await fakeRelay();

@@ -50,7 +50,7 @@ export function relayClient(baseUrl, token) {
   };
 }
 
-/** Resolves to the request's final status, or 'timeout' if the deadline passes first. */
+/** Resolves to the request's final answer. Its status is 'timeout' if the deadline passes first. */
 export async function waitForDecision(client, id, waitSeconds) {
   const deadline = Date.now() + waitSeconds * 1000;
   let failures = 0;
@@ -58,14 +58,14 @@ export async function waitForDecision(client, id, waitSeconds) {
     const started = Date.now();
     const remaining = Math.ceil((deadline - started) / 1000);
     try {
-      const { status } = await client.poll(id, Math.min(LONG_POLL_SECONDS, remaining));
+      const { status, option, message } = await client.poll(id, Math.min(LONG_POLL_SECONDS, remaining));
       failures = 0;
-      if (status !== 'pending') return status;
+      if (status !== 'pending') return { status, option, message };
     } catch (error) {
       if (error.status || ++failures >= MAX_NETWORK_FAILURES) throw error;
     }
     const elapsed = Date.now() - started;
     if (elapsed < MIN_POLL_GAP_MS) await delay(MIN_POLL_GAP_MS - elapsed);
   }
-  return 'timeout';
+  return { status: 'timeout' };
 }

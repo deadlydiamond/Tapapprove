@@ -267,10 +267,77 @@ test('cancelling cannot overturn a decision', async () => {
 
 test('oversized text is clipped so a runaway command cannot bloat storage', async () => {
   const { cli, watch } = await pairedChannel();
-  await newRequest(cli, { title: 't'.repeat(5000), detail: 'd'.repeat(20_000) });
+  await newRequest(cli, { title: 't'.repeat(5000), detail: 'd'.repeat(150_000) });
   const [request] = (await api('GET', '/v1/requests', { token: watch })).data.requests;
   assert.ok(request.title.length <= 200);
-  assert.ok(request.detail.length <= 4000);
+  assert.ok(request.detail.length <= 120_000);
+});
+
+test('a long request reaches the watch whole and can be approved', async () => {
+  const { cli, watch } = await pairedChannel();
+  const detail = `echo start; ${'d'.repeat(100_000)}; echo end`;
+  const { data } = await newRequest(cli, { detail });
+  const [request] = (await api('GET', '/v1/requests', { token: watch })).data.requests;
+  assert.equal(request.detail, detail);
+  assert.equal(request.truncated, false);
+  const approve = await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body: { decision: 'allow' } });
+  assert.equal(approve.status, 200);
+  assert.equal((await api('GET', `/v1/requests/${data.id}`, { token: cli })).data.status, 'allow');
+});
+
+test('session answers reach the watch, limited in number and length', async () => {
+  const { cli, watch } = await pairedChannel();
+  await newRequest(cli, { options: ['one', 'two', 't'.repeat(500), 'four', 5] });
+  const [request] = (await api('GET', '/v1/requests', { token: watch })).data.requests;
+  assert.equal(request.options.length, 3);
+  assert.deepEqual(request.options.slice(0, 2), ['one', 'two']);
+  assert.ok(request.options[2].length <= 200);
+});
+
+test('a request without session answers has an empty list', async () => {
+  const { cli, watch } = await pairedChannel();
+  await newRequest(cli);
+  const [request] = (await api('GET', '/v1/requests', { token: watch })).data.requests;
+  assert.deepEqual(request.options, []);
+});
+
+test('the chosen session answer reaches the computer', async () => {
+  const { cli, watch } = await pairedChannel();
+  const { data } = await newRequest(cli, { options: ['one', 'two'] });
+  const body = { decision: 'allow', option: 1 };
+  assert.equal((await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body })).status, 200);
+  const result = (await api('GET', `/v1/requests/${data.id}`, { token: cli })).data;
+  assert.equal(result.status, 'allow');
+  assert.equal(result.option, 1);
+});
+
+test('a session answer that was never offered is refused and the request stays open', async () => {
+  const { cli, watch } = await pairedChannel();
+  const { data } = await newRequest(cli, { options: ['one'] });
+  const path = `/v1/requests/${data.id}/decision`;
+  for (const option of [1, -1, 0.5, 'one']) {
+    const answer = await api('POST', path, { token: watch, body: { decision: 'allow', option } });
+    assert.equal(answer.status, 400);
+    assert.equal(answer.data.error, 'invalid_option');
+  }
+  assert.equal((await api('GET', `/v1/requests/${data.id}`, { token: cli })).data.status, 'pending');
+});
+
+test('a denial can say what to do instead, and the text is limited', async () => {
+  const { cli, watch } = await pairedChannel();
+  const { data } = await newRequest(cli);
+  const body = { decision: 'deny', message: 'm'.repeat(5000) };
+  assert.equal((await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body })).status, 200);
+  const result = (await api('GET', `/v1/requests/${data.id}`, { token: cli })).data;
+  assert.equal(result.status, 'deny');
+  assert.equal(result.message.length, 1000);
+});
+
+test('an approval carries no message', async () => {
+  const { cli, watch } = await pairedChannel();
+  const { data } = await newRequest(cli);
+  await api('POST', `/v1/requests/${data.id}/decision`, { token: watch, body: { decision: 'allow', message: 'x' } });
+  assert.equal((await api('GET', `/v1/requests/${data.id}`, { token: cli })).data.message, undefined);
 });
 
 test('a cut request reaches the watch marked as cut', async () => {
@@ -282,7 +349,7 @@ test('a cut request reaches the watch marked as cut', async () => {
 
 test('text the relay has to clip is marked as cut even if the client did not say so', async () => {
   const { cli, watch } = await pairedChannel();
-  await newRequest(cli, { detail: 'd'.repeat(20_000) });
+  await newRequest(cli, { detail: 'd'.repeat(150_000) });
   const [request] = (await api('GET', '/v1/requests', { token: watch })).data.requests;
   assert.equal(request.truncated, true);
 });

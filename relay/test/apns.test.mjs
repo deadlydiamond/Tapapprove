@@ -74,6 +74,19 @@ test('a request too long for the notification must be opened, so no one approves
   assert.ok(aps.alert.body.length <= 180);
 });
 
+test('a short request can be allowed for the session from the notification, which names what that allows', () => {
+  const { aps } = buildPayload({ ...SUMMARY, options: ['Yes, allow ls for this session'] });
+  assert.equal(aps.category, 'TAPAPPROVE_QUICK_SESSION');
+  assert.match(aps.alert.body, /ls -la/);
+  assert.match(aps.alert.body, /Yes, allow ls for this session/);
+});
+
+test('a session answer that does not fit beside the request must be opened', () => {
+  const { aps } = buildPayload({ ...SUMMARY, detail: 'x'.repeat(150), options: ['Yes, allow ls for this session'] });
+  assert.equal(aps.category, 'TAPAPPROVE_REVIEW');
+  assert.doesNotMatch(aps.alert.body, /this session/);
+});
+
 test('a short request marked as cut still must be opened, since the tail is hidden', () => {
   assert.equal(buildPayload({ ...SUMMARY, truncated: true }).aps.category, 'TAPAPPROVE_REVIEW');
 });

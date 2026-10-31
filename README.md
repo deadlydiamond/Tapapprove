@@ -4,16 +4,16 @@ Approve Claude Code permission prompts from an Apple Watch.
 
 An independent project, not made by or affiliated with Anthropic or Apple.
 
-<img src="docs/request.png" width="208" alt="A request on the watch: Run command, ls -la, with Deny and Approve buttons">
+<img src="docs/request.png" width="208" alt="A request on the watch: Run command, ls -la, with Yes and Yes, allow ls for this session">
 
 ```
 Claude Code ── PermissionRequest hook ── cli ──▶ relay ──▶ APNs ──▶ watch
                                           ◀──── decision ◀──────────┘
 ```
 
-When Claude Code wants to ask for permission, the hook sends a short summary to the relay and waits. The watch shows it. Whichever answers first wins: the watch, or Claude Code's own dialog, which stays open the whole time.
+When Claude Code wants to ask for permission, the hook sends the request to the relay and waits. The watch shows it with the same answers as Claude Code's dialog: Yes, Yes for this session when Claude Code suggests a rule, No, and Tell Claude what to do instead. Whichever answers first wins: the watch, or the dialog, which stays open the whole time.
 
-Claude Code's Remote Control can also notify a watch. When tested in October 2026, those notifications offered Deny, Deny with comment and Dismiss, with no Approve, and needed a Remote Control session. Tapapprove adds Approve and does not use Remote Control.
+Claude Code's Remote Control can also notify a watch. When tested in October 2026, those notifications offered Deny, Deny with comment and Dismiss, with no Approve, and needed a Remote Control session. Tapapprove adds Yes and does not use Remote Control.
 
 ## Status
 
@@ -121,20 +121,21 @@ Use the Bash tool to run exactly this command: rm -rf /tmp/tapapprove-try
 
 The request should appear on your watch while the dialog stays open on the computer. If nothing arrives, run `npx tapapprove status` to check the pairing, the hook and push.
 
-With the hook global, the summaries of those prompts from all your projects go through your relay. In a `claude -p` run there is no dialog to fall back on, so a prompt the watch does not answer within the wait (90 seconds by default) is denied.
+With the hook global, the masked text of every prompt from all your projects goes through your relay, including the content of a file being written. In a `claude -p` run there is no dialog to fall back on, so a prompt the watch does not answer within the wait (90 seconds by default) is denied.
 
 ## Safety rules
 
 - **A failure is never an approval.** Only a real answer from the watch produces a decision. If the relay is down, the token is revoked or time runs out, the hook prints nothing and Claude Code's dialog decides.
 - **Only the watch can decide.** The computer's token cannot approve its own requests.
-- **No unseen approvals.** Approve stays off until the end of the command has been scrolled to. A notification offers Approve only when it shows the whole request. A request too long to show in full can be denied on the watch but only approved on the computer, and the relay enforces this too.
+- **No unseen approvals.** The whole request goes to the watch, and the answers come after its end, so you scroll past the text to reach them. No stays one tap away the whole time. A notification offers Yes only when it shows the whole request. A longer one offers Read & Approve, which opens the app. A request over 100,000 characters never goes to the watch, and Claude Code's dialog decides it.
+- **A session answer lasts the session.** Yes, allow ... for this session uses the rule Claude Code suggested, and nothing is saved to your settings, even when Claude Code suggested saving it. The rule stays on your computer, and the watch only picks from the list. An MCP tool with no suggestion is allowed by tool name, which is broader than a rule for one site.
 - **No stray taps.** A newly shown request ignores taps for 0.6 seconds, so a tap aimed at the previous one cannot approve it.
 - **Secrets are masked on the computer, but never at the cost of hiding what runs.** Tokens, passwords and key-shaped strings are removed before the summary leaves the machine. A value containing anything executable, such as `$(...)` or `;`, is shown as it is, even if it reveals a secret. This is pattern matching, so an unusual secret can get through.
 - **The hook runs a private copy.** `pair` copies the CLI to `~/.tapapprove/app` and the hook runs it by absolute path, so a `node_modules` planted in a project cannot replace it.
 
 **Known limit:** in the VS Code or Cursor panel, Claude Code does not stop the hook when you answer the dialog first. The card stays on the watch until the wait runs out (90 seconds by default). Tapping it then has no effect: an approve on the watch cannot overturn a denial given in the dialog.
 
-The relay is not end-to-end encrypted: whoever runs it can read the masked summaries and could forge a decision. Run your own relay and keep its Cloudflare account secure.
+The relay is not end-to-end encrypted: whoever runs it can read the masked requests and could forge a decision. Run your own relay and keep its Cloudflare account secure.
 
 ## Layout
 

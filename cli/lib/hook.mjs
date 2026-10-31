@@ -6,6 +6,7 @@ import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { configDir, DEFAULT_WAIT_SECONDS, loadConfig } from './config.mjs';
 import { describeTool } from './describe.mjs';
+import { sessionOptions } from './options.mjs';
 import { relayClient, waitForDecision } from './relay.mjs';
 
 const MAX_LOG_BYTES = 1_000_000;
@@ -29,15 +30,22 @@ function log(event, tool, outcome, startedAt) {
   }
 }
 
-function permissionDecision(status) {
+function permissionDecision({ status, option, message }, options) {
   if (status === 'allow') {
-    return { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } };
-  }
-  if (status === 'deny') {
+    const update = options[option]?.update;
     return {
       hookSpecificOutput: {
         hookEventName: 'PermissionRequest',
-        decision: { behavior: 'deny', message: 'The user denied this from Tapapprove on their Apple Watch.' },
+        decision: { behavior: 'allow', ...(update ? { updatedPermissions: [update] } : {}) },
+      },
+    };
+  }
+  if (status === 'deny') {
+    const denied = 'The user denied this from Tapapprove on their Apple Watch.';
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: 'deny', message: message ? `${denied} They said: ${message}` : denied },
       },
     };
   }
@@ -74,11 +82,18 @@ export async function runHook(stdinText) {
   process.once('SIGINT', stop);
 
   const waitSeconds = config.waitSeconds ?? DEFAULT_WAIT_SECONDS;
+  const options = sessionOptions(tool, input.permission_suggestions);
   let outcome;
   try {
+    const summary = describeTool(tool, input.tool_input);
+    if (summary.truncated) {
+      log(event, tool, 'skipped:too-long', startedAt);
+      return;
+    }
     const created = await client.createRequest({
       tool,
-      ...describeTool(tool, input.tool_input),
+      ...summary,
+      options: options.map((option) => option.label),
       project: input.cwd ? basename(input.cwd) : undefined,
       ttlSeconds: waitSeconds,
     });
@@ -89,8 +104,8 @@ export async function runHook(stdinText) {
     return;
   }
 
-  if (outcome === 'timeout') await client.cancel(requestId).catch(() => {});
-  log(event, tool, outcome, startedAt);
-  const decision = permissionDecision(outcome);
+  if (outcome.status === 'timeout') await client.cancel(requestId).catch(() => {});
+  log(event, tool, outcome.status, startedAt);
+  const decision = permissionDecision(outcome, options);
   if (decision) process.stdout.write(`${JSON.stringify(decision)}\n`);
 }

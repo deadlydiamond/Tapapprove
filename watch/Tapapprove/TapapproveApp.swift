@@ -17,6 +17,8 @@ struct TapapproveApp: App {
 final class AppDelegate: NSObject, WKApplicationDelegate, UNUserNotificationCenterDelegate {
     private static let approveAction = "APPROVE"
     private static let denyAction = "DENY"
+    private static let reviewAction = "REVIEW"
+    private static let sessionAction = "ALLOW_SESSION"
 
     let model = AppModel()
 
@@ -24,12 +26,21 @@ final class AppDelegate: NSObject, WKApplicationDelegate, UNUserNotificationCent
         let center = UNUserNotificationCenter.current()
         center.delegate = self
 
-        let approve = UNNotificationAction(identifier: Self.approveAction, title: "Approve")
-        let deny = UNNotificationAction(identifier: Self.denyAction, title: "Deny", options: .destructive)
+        let approve = UNNotificationAction(identifier: Self.approveAction, title: "Yes")
+        let session = UNNotificationAction(identifier: Self.sessionAction, title: "Yes, for this session")
+        let deny = UNNotificationAction(identifier: Self.denyAction, title: "No", options: .destructive)
+        // Opens the app, where the answers wait after the end of the text.
+        let review = UNNotificationAction(identifier: Self.reviewAction, title: "Read & Approve", options: .foreground)
         center.setNotificationCategories([
-            // The relay picks QUICK only when the notification can show the whole request.
+            // The relay picks a QUICK category only when the notification can show the whole
+            // request, and the session one only when it can also show what that answer allows.
             UNNotificationCategory(identifier: "TAPAPPROVE_QUICK", actions: [approve, deny], intentIdentifiers: []),
-            UNNotificationCategory(identifier: "TAPAPPROVE_REVIEW", actions: [deny], intentIdentifiers: []),
+            UNNotificationCategory(
+                identifier: "TAPAPPROVE_QUICK_SESSION",
+                actions: [approve, session, deny],
+                intentIdentifiers: []
+            ),
+            UNNotificationCategory(identifier: "TAPAPPROVE_REVIEW", actions: [review, deny], intentIdentifiers: []),
         ])
     }
 
@@ -56,12 +67,13 @@ final class AppDelegate: NSObject, WKApplicationDelegate, UNUserNotificationCent
     ) async {
         let action = response.actionIdentifier
         guard let requestID = response.notification.request.content.userInfo["requestId"] as? String else { return }
-        let decision: Decision
+        let answer: Answer
         switch action {
-        case Self.approveAction: decision = .allow
-        case Self.denyAction: decision = .deny
+        case Self.approveAction: answer = Answer(decision: .allow)
+        case Self.sessionAction: answer = Answer(decision: .allow, option: 0)
+        case Self.denyAction: answer = Answer(decision: .deny)
         default: return
         }
-        await model.decide(requestID: requestID, decision: decision)
+        await model.decide(requestID: requestID, answer: answer)
     }
 }

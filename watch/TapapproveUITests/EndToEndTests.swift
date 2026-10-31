@@ -11,7 +11,7 @@ final class EndToEndTests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func testPairThenApproveThenDeny() throws {
+    func testPairThenAnswerRequests() throws {
         let app = XCUIApplication()
         app.launchArguments = ["-tapapprove-ui-test"]
         app.launch()
@@ -21,42 +21,79 @@ final class EndToEndTests: XCTestCase {
         screenshot("1-pairing")
         try code.label.write(to: handoff.appending(path: "code"), atomically: true, encoding: .utf8)
 
-        // First request: a long command, which must be read before it can be approved.
-        let approve = app.buttons["approveButton"]
-        XCTAssertTrue(approve.waitForExistence(timeout: 120), "The first request never reached the watch")
-        sleep(2)
-        screenshot("2-long-request-unread")
-        XCTAssertFalse(approve.isEnabled, "Approve must stay off until the end of the text is reached")
+        let idle = app.staticTexts["idleTitle"]
+        XCTAssertTrue(idle.waitForExistence(timeout: 60), "Pairing never finished")
+        screenshot("2-idle")
 
-        var swipes = 0
-        while !approve.isEnabled && swipes < 40 {
-            app.swipeUp()
-            swipes += 1
-        }
-        XCTAssertTrue(approve.isEnabled, "Scrolling to the end should enable Approve")
-        screenshot("3-long-request-read")
-        approve.tap()
-
-        // Second request: short, so Approve is ready as soon as the safety delay ends.
+        // First request: long, so its answers do not exist until the end has been reached.
         let title = app.staticTexts["requestTitle"]
-        XCTAssertTrue(title.waitForExistence(timeout: 120), "The second request never reached the watch")
+        let approve = app.buttons["approveButton"]
+        XCTAssertTrue(title.waitForExistence(timeout: 120), "The first request never reached the watch")
+        waitUntilEnabled(app.buttons["quickDenyButton"])
+        screenshot("3-long-request-unread")
+        XCTAssertFalse(approve.exists, "Yes must not exist until the end of the text is reached")
+        scrollUntilVisible(approve, app: app, swipes: 40)
+        waitUntilEnabled(approve)
+        screenshot("4-long-request-read")
+        approve.tap()
+        confirmOutcome(app, screenshot: "5-approved")
+
+        // Second request: short, with a session answer in Claude's own words.
+        let session = app.buttons["sessionOption0"]
+        XCTAssertTrue(session.waitForExistence(timeout: 120), "The session answer never reached the watch")
+        waitUntilEnabled(session)
+        screenshot("6-short-request")
+        scrollUntilVisible(session, app: app, swipes: 5)
+        screenshot("7-session-answer")
+        session.tap()
+        confirmOutcome(app, screenshot: "8-approved-for-session")
+
+        // Third request: short, denied from the list of answers.
+        XCTAssertTrue(title.waitForExistence(timeout: 120), "The third request never reached the watch")
         let deny = app.buttons["denyButton"]
+        XCTAssertTrue(deny.waitForExistence(timeout: 10))
         waitUntilEnabled(deny)
-        waitUntilEnabled(app.buttons["approveButton"])
-        screenshot("4-short-request")
+        scrollUntilVisible(app.buttons["insteadButton"], app: app, swipes: 5)
+        screenshot("9-all-answers")
+        scrollUntilVisible(deny, app: app, swipes: 5)
         deny.tap()
+        confirmOutcome(app, screenshot: "10-denied")
 
-        // Third request: too long to show in full, so it can only be denied here.
-        let notice = app.staticTexts["truncatedNotice"]
-        let noticeShown = NSPredicate(format: "exists == true")
-        wait(for: [XCTNSPredicateExpectation(predicate: noticeShown, object: notice)], timeout: 120)
-        waitUntilEnabled(deny)
-        screenshot("5-too-long-request")
-        XCTAssertFalse(app.buttons["approveButton"].exists, "A request with a hidden tail must not offer Approve")
-        deny.tap()
+        // Fourth request: thousands of characters, which must arrive whole and be approvable.
+        let hint = app.staticTexts["scrollHint"]
+        XCTAssertTrue(hint.waitForExistence(timeout: 120), "The very long request never reached the watch")
+        XCTAssertFalse(approve.exists, "Yes must not exist until the end of the text is reached")
+        scrollUntilVisible(approve, app: app, swipes: 150)
+        waitUntilEnabled(approve)
+        approve.tap()
+        confirmOutcome(app, screenshot: "11-approved-long")
 
-        XCTAssertTrue(app.staticTexts["idleTitle"].waitForExistence(timeout: 30))
-        screenshot("6-idle")
+        // Fifth request: close to the limit. The app must stay responsive, and No is one tap away.
+        XCTAssertTrue(hint.waitForExistence(timeout: 120), "The request near the limit never reached the watch")
+        let quickDeny = app.buttons["quickDenyButton"]
+        waitUntilEnabled(quickDeny)
+        XCTAssertFalse(approve.exists, "Yes must not exist until the end of the text is reached")
+        XCTAssertFalse(app.staticTexts["truncatedNotice"].exists, "A whole request must not say it is too long")
+        screenshot("12-near-limit-request")
+        quickDeny.tap()
+        confirmOutcome(app, screenshot: "13-denied-long")
+
+        XCTAssertTrue(idle.waitForExistence(timeout: 30))
+    }
+
+    private func scrollUntilVisible(_ element: XCUIElement, app: XCUIApplication, swipes: Int) {
+        var count = 0
+        while !(element.exists && element.isHittable) && count < swipes {
+            app.swipeUp()
+            count += 1
+        }
+        XCTAssertTrue(element.exists && element.isHittable, "\(element) is not reachable by scrolling")
+    }
+
+    private func confirmOutcome(_ app: XCUIApplication, screenshot name: String) {
+        XCTAssertTrue(app.staticTexts["outcomeTitle"].waitForExistence(timeout: 10), "No confirmation after answering")
+        sleep(1)
+        screenshot(name)
     }
 
     private func waitUntilEnabled(_ element: XCUIElement) {

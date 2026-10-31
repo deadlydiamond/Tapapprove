@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { MAX_DETAIL } from '../lib/describe.mjs';
 import { DEAD_RELAY, fakeRelay, run, tempHome, writeConfig } from './helpers.mjs';
 
 const PROMPT = JSON.stringify({
@@ -53,14 +54,59 @@ test('sends the masked summary and the project name, with the CLI token', async 
   assert.ok(!create.body.detail.includes('abc'));
 });
 
-test('tells the relay when the summary was cut', async () => {
-  const stdin = JSON.stringify({
-    hook_event_name: 'PermissionRequest',
-    tool_name: 'Bash',
-    tool_input: { command: 'a'.repeat(5000) },
+const promptFor = (command) =>
+  JSON.stringify({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command } });
+
+test('sends a long command whole', async () => {
+  const command = `echo start; ${'a'.repeat(50_000)}; echo end`;
+  const { relay } = await hook({ decide: () => 'allow', stdin: promptFor(command) });
+  const { body } = relay.calls.find((call) => call.path === '/v1/requests');
+  assert.equal(body.detail, command);
+  assert.equal(body.truncated, false);
+});
+
+const withSuggestion = JSON.stringify({
+  hook_event_name: 'PermissionRequest',
+  tool_name: 'Bash',
+  tool_input: { command: 'npm run build' },
+  permission_suggestions: [
+    { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm run *' }], behavior: 'allow', destination: 'localSettings' },
+  ],
+});
+
+test('offers Claude suggestions to the watch as session answers', async () => {
+  const { relay } = await hook({ decide: () => 'deny', stdin: withSuggestion });
+  const { body } = relay.calls.find((call) => call.path === '/v1/requests');
+  assert.deepEqual(body.options, ['Yes, allow npm run * for this session']);
+});
+
+test('a session answer applies the suggestion for this session only', async () => {
+  const { stdout } = await hook({ decide: () => ({ status: 'allow', option: 0 }), stdin: withSuggestion });
+  assert.deepEqual(JSON.parse(stdout).hookSpecificOutput.decision, {
+    behavior: 'allow',
+    updatedPermissions: [
+      { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm run *' }], behavior: 'allow', destination: 'session' },
+    ],
   });
-  const { relay } = await hook({ decide: () => 'deny', stdin });
-  assert.equal(relay.calls.find((call) => call.path === '/v1/requests').body.truncated, true);
+});
+
+test('an answer the hook never offered allows only this request', async () => {
+  const { stdout } = await hook({ decide: () => ({ status: 'allow', option: 7 }), stdin: withSuggestion });
+  assert.deepEqual(JSON.parse(stdout).hookSpecificOutput.decision, { behavior: 'allow' });
+});
+
+test('what to do instead reaches Claude with the denial', async () => {
+  const { stdout } = await hook({ decide: () => ({ status: 'deny', message: 'use pnpm instead' }), stdin: withSuggestion });
+  const { decision } = JSON.parse(stdout).hookSpecificOutput;
+  assert.equal(decision.behavior, 'deny');
+  assert.match(decision.message, /use pnpm instead/);
+  assert.match(decision.message, /Apple Watch/);
+});
+
+test('leaves a request the watch could not show in full to the dialog', async () => {
+  const { code, stdout, relay } = await hook({ decide: () => 'allow', stdin: promptFor('a'.repeat(MAX_DETAIL + 1)) });
+  asksForPrompt({ code, stdout });
+  assert.equal(relay.calls.some((call) => call.path === '/v1/requests'), false);
 });
 
 test('keeps waiting across pending polls until a decision arrives', async () => {

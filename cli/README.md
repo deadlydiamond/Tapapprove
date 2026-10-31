@@ -5,7 +5,7 @@ Approve Claude Code permission prompts from your Apple Watch.
 An independent project, not made by or affiliated with Anthropic or Apple.
 
 ```sh
-npx tapapprove pair <code>   # the code shown in the Tapapprove watch app
+npx tapapprove pair <code> --relay https://<your-relay>   # the code shown in the Tapapprove watch app
 npx tapapprove test          # send a test request to your watch
 npx tapapprove status        # show the pairing, the relay and the hook
 npx tapapprove unpair        # remove the pairing and the hook
@@ -15,7 +15,7 @@ npx tapapprove unpair        # remove the pairing and the hook
 
 ## What leaves your computer
 
-For each permission prompt, a short summary goes to the relay so your watch can show it: the tool name, the command or file change, and the project folder name. Text that looks like a secret is removed first, unless removing it could hide something that runs. This is pattern matching, so an unusual secret can get through.
+For each permission prompt, the request goes to the relay so your watch can show it: the tool name, the full command or file change, and the project folder name. Text that looks like a secret is removed first, unless removing it could hide something that runs. This is pattern matching, so an unusual secret can get through.
 
 ## When something goes wrong
 

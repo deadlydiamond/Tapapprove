@@ -8,10 +8,10 @@ If you run your own relay, this data goes to your own Cloudflare account and you
 
 ## What is sent
 
-When Claude Code asks for permission, the Tapapprove command-line tool on your computer sends a short summary to the Tapapprove relay so your watch can show it:
+When Claude Code asks for permission, the Tapapprove command-line tool on your computer sends the request to the Tapapprove relay so your watch can show it:
 
 - the tool name, such as "Bash"
-- a summary of the request, such as the command to run or the file to change
+- the full text of the request, up to 100,000 characters, such as the command to run, or the path and new content of a file being changed
 - the name of the project folder
 
 Before sending, the tool removes text that looks like a secret, such as tokens and passwords. This is pattern matching and cannot catch everything, so an unusual secret could be included. Do not approve from the watch in projects where this matters.
@@ -26,6 +26,7 @@ The relay also stores:
 ## How long it is kept
 
 - **Request text** is deleted as soon as you answer. Unanswered requests are deleted within about 30 minutes.
+- **What you tell Claude to do instead** is kept until your computer has read it, then deleted within about 30 minutes.
 - **Pairing data** is kept until you unpair, by running `tapapprove unpair` or using Unpair on the watch.
 - **Unused pairing codes** are deleted when they expire, after 10 minutes.
 
@@ -34,7 +35,7 @@ The relay also stores:
 - **Cloudflare** hosts the relay.
 - **Apple** delivers push notifications. A notification includes the request title, the project name and the start of the request text.
 
-Data is encrypted in transit, but it is not end-to-end encrypted: the relay can read the summaries while they are stored. We do not sell this data or use it for anything except delivering your approvals.
+Data is encrypted in transit, but it is not end-to-end encrypted: the relay can read the requests while they are stored. We do not sell this data or use it for anything except delivering your approvals.
 
 On your computer, a log at `~/.tapapprove/hook.log` records tool names and outcomes. It never includes command text and stays on your computer.
 

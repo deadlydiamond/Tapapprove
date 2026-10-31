@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { claudeSettingsPath, configDir, DEFAULT_RELAY, DEFAULT_WAIT_SECONDS, deleteConfig, loadConfig, saveConfig } from '../lib/config.mjs';
-import { describeTool } from '../lib/describe.mjs';
+import { describeTool, MAX_DETAIL } from '../lib/describe.mjs';
 import { runHook } from '../lib/hook.mjs';
 import { relayClient, waitForDecision } from '../lib/relay.mjs';
 import { hookInstalled, installHook, readSettings, uninstallHook } from '../lib/settings.mjs';
@@ -22,6 +22,7 @@ const USAGE = `Usage: tapapprove <command>
                   --tool <name>        Tool name to show (default Bash)
                   --command <text>     Command to show
                   --timeout <seconds>  How long to wait (default 60)
+                  --session-label <text>  Also offer this "for this session" answer
   status        Show the pairing, the relay and the hook
   unpair        Remove the pairing and the hook
 `;
@@ -35,6 +36,7 @@ const OPTIONS = {
   tool: { type: 'string' },
   command: { type: 'string' },
   timeout: { type: 'string' },
+  'session-label': { type: 'string' },
 };
 
 class UsageError extends Error {}
@@ -101,22 +103,29 @@ async function test(values) {
   const config = requireConfig();
   const timeout = positiveSeconds(values.timeout, '--timeout', 60);
   const tool = values.tool ?? 'Bash';
+  const summary = describeTool(tool, { command: values.command ?? 'echo "Hello from Tapapprove"' });
+  const label = values['session-label'];
+  if (summary.truncated) {
+    console.log(`Too long for the watch (over ${MAX_DETAIL} characters). Claude Code's dialog decides a request like this.`);
+    return 2;
+  }
   const client = relayClient(config.relay, config.token);
   const { id, pushed } = await client.createRequest({
     tool,
-    ...describeTool(tool, { command: values.command ?? 'echo "Hello from Tapapprove"' }),
+    ...summary,
+    options: label ? [label] : [],
     project: 'tapapprove test',
     ttlSeconds: timeout,
   });
   console.log(pushed ? 'Sent. Check your watch.' : 'Sent without a push, so open Tapapprove on your watch.');
 
-  const status = await waitForDecision(client, id, timeout);
+  const { status, option, message } = await waitForDecision(client, id, timeout);
   if (status === 'allow') {
-    console.log('Approved on the watch.');
+    console.log(option === 0 ? 'Approved on the watch for this session.' : 'Approved on the watch.');
     return 0;
   }
   if (status === 'deny') {
-    console.log('Denied on the watch.');
+    console.log(message ? `Denied on the watch. It said: ${message}` : 'Denied on the watch.');
     return 1;
   }
   if (status === 'timeout') await client.cancel(id).catch(() => {});

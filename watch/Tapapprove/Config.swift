@@ -24,4 +24,6 @@ enum Config {
     static let pollInterval: Duration = .seconds(2)
     /// A new request ignores taps this long, so a tap aimed at the previous one cannot approve it.
     static let armDelay: Duration = .milliseconds(600)
+    /// The UI test waits for the app to go idle before it looks, so it needs longer to see this.
+    static let outcomeDuration: Duration = isUITest ? .seconds(4) : .milliseconds(900)
 }

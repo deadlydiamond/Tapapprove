@@ -67,8 +67,15 @@ test('a request that fits is not marked as cut', () => {
   assert.equal(describeTool('Bash', { command: 'ls' }).truncated, false);
 });
 
-test('a request past the limit is marked as cut, so the watch can refuse to approve it', () => {
+test('a request past the limit is marked as cut, so it never reaches the watch', () => {
   assert.equal(describeTool('Bash', { command: 'a'.repeat(MAX_DETAIL + 1) }).truncated, true);
+});
+
+test('a long command arrives whole, so its end can be read before approving', () => {
+  const command = `echo start; ${'a'.repeat(50_000)}; rm -rf ~/work`;
+  const summary = describeTool('Bash', { command });
+  assert.equal(summary.detail, command);
+  assert.equal(summary.truncated, false);
 });
 
 test('a command leaving the sandbox says so first, so a person can judge the risk', () => {

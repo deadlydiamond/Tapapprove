@@ -1,4 +1,4 @@
-const MAX_BODY_BYTES = 64 * 1024;
+const MAX_BODY_BYTES = 512 * 1024;
 
 export class HttpError extends Error {
   status: number;

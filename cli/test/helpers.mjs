@@ -59,7 +59,8 @@ export async function fakeRelay({ decide = () => 'pending', claim, createStatus 
         return send(200, { id: 'r1', expiresAt: Date.now() + 60_000, pushed: false });
       }
       if (req.method === 'GET' && url.pathname === '/v1/requests/r1') {
-        return send(200, { id: 'r1', status: decide(parsed) });
+        const answer = decide(parsed);
+        return send(200, { id: 'r1', ...(typeof answer === 'string' ? { status: answer } : answer) });
       }
       if (req.method === 'DELETE' && url.pathname === '/v1/requests/r1') {
         return send(200, { id: 'r1', status: 'cancelled' });

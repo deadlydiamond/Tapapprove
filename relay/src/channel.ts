@@ -33,13 +33,23 @@ interface RequestRecord {
   status: Status;
   /** Part of the request is not shown, so it can be denied but not approved. */
   truncated: boolean;
+  /** Labels for 'for this session' answers. The rules behind them stay on the computer. */
+  options?: string[];
+  /** Which of those answers was chosen. */
+  option?: number;
+  /** What the person said to do instead of a denied request. */
+  message?: string;
 }
 
 const META_KEY = 'meta';
 const REQUEST_PREFIX = 'req:';
 const MAX_NAME = 64;
 const MAX_TITLE = 200;
-const MAX_DETAIL = 4000;
+// Above the CLI's own limit, so a request from the CLI is never clipped here.
+const MAX_DETAIL = 120_000;
+const MAX_OPTIONS = 3;
+const MAX_OPTION = 200;
+const MAX_MESSAGE = 1000;
 const DEFAULT_TTL_SECONDS = 90;
 const MAX_TTL_SECONDS = 300;
 const MAX_LONG_POLL_SECONDS = 30;
@@ -179,6 +189,12 @@ export class ChannelDO extends DurableObject<Env> {
 
     const ttl = typeof body.ttlSeconds === 'number' ? body.ttlSeconds : DEFAULT_TTL_SECONDS;
     const fullDetail = typeof body.detail === 'string' ? body.detail : '';
+    const options = Array.isArray(body.options)
+      ? body.options
+          .filter((option): option is string => typeof option === 'string' && option.length > 0)
+          .slice(0, MAX_OPTIONS)
+          .map((option) => option.slice(0, MAX_OPTION))
+      : [];
     const record: RequestRecord = {
       id: crypto.randomUUID(),
       tool,
@@ -189,6 +205,7 @@ export class ChannelDO extends DurableObject<Env> {
       expiresAt: now + Math.min(Math.max(ttl, 1), MAX_TTL_SECONDS) * 1000,
       status: 'pending',
       truncated: body.truncated === true || fullDetail.length > MAX_DETAIL,
+      options,
     };
     await this.ctx.storage.put(REQUEST_PREFIX + record.id, record);
     await this.ensureCleanup(now);
@@ -213,7 +230,7 @@ export class ChannelDO extends DurableObject<Env> {
     const requests = (await this.allRequests())
       .filter((record) => currentStatus(record, now) === 'pending')
       .sort((a, b) => a.createdAt - b.createdAt)
-      .map(({ id, tool, title, detail, project, createdAt, expiresAt, truncated }) => ({
+      .map(({ id, tool, title, detail, project, createdAt, expiresAt, truncated, options = [] }) => ({
         id,
         tool,
         title,
@@ -222,6 +239,7 @@ export class ChannelDO extends DurableObject<Env> {
         createdAt,
         expiresAt,
         truncated,
+        options,
       }));
     return json({ requests, serverTime: now });
   }
@@ -234,11 +252,11 @@ export class ChannelDO extends DurableObject<Env> {
       await this.waitForChange(id, Math.min(wait * 1000, record.expiresAt - now));
     }
     const latest = await this.requireRequest(id);
-    return json({ id, status: currentStatus(latest, Date.now()) });
+    return json({ id, status: currentStatus(latest, Date.now()), option: latest.option, message: latest.message });
   }
 
   private async decide(id: string, request: Request): Promise<Response> {
-    const { decision } = await readJson(request);
+    const { decision, option, message } = await readJson(request);
     if (decision !== 'allow' && decision !== 'deny') throw new HttpError(400, 'invalid_decision');
     const record = await this.requireRequest(id);
     const status = currentStatus(record, Date.now());
@@ -246,6 +264,13 @@ export class ChannelDO extends DurableObject<Env> {
       if (decision === 'allow' && record.truncated) {
         throw new HttpError(409, 'too_long_to_approve', { status });
       }
+      if (decision === 'allow' && option !== undefined) {
+        if (!Number.isInteger(option) || (option as number) < 0 || (option as number) >= (record.options ?? []).length) {
+          throw new HttpError(400, 'invalid_option');
+        }
+        record.option = option as number;
+      }
+      if (decision === 'deny') record.message = clipped(message, MAX_MESSAGE);
       await this.finish(record, decision);
       return json({ id, status: decision });
     }
@@ -315,7 +340,7 @@ export class ChannelDO extends DurableObject<Env> {
 
   /** Closes a request and drops its text, which nothing needs once it is answered. */
   private async finish(record: RequestRecord, status: Status): Promise<void> {
-    await this.ctx.storage.put(REQUEST_PREFIX + record.id, { ...record, status, detail: '' });
+    await this.ctx.storage.put(REQUEST_PREFIX + record.id, { ...record, status, detail: '', options: [] });
     this.wake(record.id);
   }
 

@@ -5,6 +5,14 @@ enum Decision: String, Codable, Sendable {
     case deny
 }
 
+/// An answer to a request. `option` picks a "for this session" answer, and `message` says
+/// what to do instead of a denied request.
+struct Answer: Encodable, Equatable, Sendable {
+    let decision: Decision
+    var option: Int?
+    var message: String?
+}
+
 enum RelayError: Error {
     /// The token is no longer valid, so the pairing was revoked.
     case unauthorized
@@ -32,6 +40,7 @@ struct ApprovalRequest: Decodable, Sendable {
     let project: String?
     let expiresAt: Double
     let truncated: Bool
+    let options: [String]?
 }
 
 struct PendingList: Decodable, Sendable {
@@ -55,8 +64,8 @@ struct RelayClient: Sendable {
         try await send("GET", "/v1/requests")
     }
 
-    func decide(requestID: String, decision: Decision) async throws {
-        let _: Empty = try await send("POST", "/v1/requests/\(requestID)/decision", body: ["decision": decision.rawValue])
+    func decide(requestID: String, answer: Answer) async throws {
+        let _: Empty = try await send("POST", "/v1/requests/\(requestID)/decision", body: answer)
     }
 
     func registerDevice(apnsToken: String, environment: String) async throws {
@@ -72,7 +81,7 @@ struct RelayClient: Sendable {
     private func send<Response: Decodable>(
         _ method: String,
         _ path: String,
-        body: [String: String]? = nil
+        body: (any Encodable)? = nil
     ) async throws -> Response {
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = method

@@ -1,7 +1,8 @@
-// Turns a tool call into the short text shown on the watch. This text leaves the
-// machine, so secrets are masked here, before anything is sent to the relay.
+// Turns a tool call into the text shown on the watch. This text leaves the machine,
+// so secrets are masked here, before anything is sent to the relay.
 
-export const MAX_DETAIL = 1500;
+// Approving means reading the end of the text, so anything longer never reaches the watch.
+export const MAX_DETAIL = 100_000;
 const MAX_TITLE = 120;
 
 const TITLES = {
@@ -43,7 +44,7 @@ const SECRET_PATTERNS = [
   [/(:\/\/[^\s:/@]+:)([^\s/@]+)@/g, (match, prefix, value) => unlessActive(match, value, `${prefix}***@`)],
 ];
 
-function mask(text) {
+export function mask(text) {
   return SECRET_PATTERNS.reduce((masked, [pattern, replacement]) => masked.replace(pattern, replacement), text);
 }
 
@@ -52,7 +53,7 @@ function asText(value) {
   return typeof value === 'string' ? value : JSON.stringify(value, null, 1);
 }
 
-function titleFor(tool) {
+export function titleFor(tool) {
   if (TITLES[tool]) return TITLES[tool];
   const mcp = tool.match(/^mcp__(.+?)__(.+)$/);
   return mcp ? `${mcp[1]}: ${mcp[2]}` : tool;

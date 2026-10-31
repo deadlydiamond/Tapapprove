@@ -50,18 +50,29 @@ cli pair "$CODE" --relay "$RELAY" --name "E2E Mac" || fail "pair"
 cli status || fail "status"
 
 LONG_COMMAND="echo start; $(printf 'echo this-line-makes-the-command-long; %.0s' {1..30})echo end"
-TOO_LONG_COMMAND="echo start; $(printf 'echo this-line-makes-the-command-long; %.0s' {1..60})echo end"
+VERY_LONG_COMMAND="echo start; $(printf 'echo this-line-makes-the-command-long; %.0s' {1..200})echo end"
+NEAR_LIMIT_COMMAND="echo start; $(printf 'echo this-line-makes-the-command-long; %.0s' {1..2450})echo end"
 echo "Long request: the watch must scroll to the end, then approve"
 cli test --timeout 120 --command "$LONG_COMMAND"
 [[ $? == 0 ]] || fail "the long request should have been approved (exit 0)"
+
+echo "Short request with a session answer: the watch allows it for this session"
+OUTPUT=$(cli test --timeout 120 --command 'ls -la' --session-label 'Yes, allow ls for this session')
+[[ $? == 0 ]] || fail "the session answer should have approved (exit 0)"
+[[ $OUTPUT == *"for this session"* ]] || fail "the computer never heard which answer was chosen: $OUTPUT"
+echo "$OUTPUT"
 
 echo "Short request: the watch denies"
 cli test --timeout 120 --command 'ls -la'
 [[ $? == 1 ]] || fail "the short request should have been denied (exit 1)"
 
-echo "Too-long request: the watch offers no Approve, only Deny"
-cli test --timeout 120 --command "$TOO_LONG_COMMAND"
-[[ $? == 1 ]] || fail "the too-long request should have been denied (exit 1)"
+echo "Very long request: it arrives whole, the watch scrolls to the end, then approves"
+cli test --timeout 300 --command "$VERY_LONG_COMMAND"
+[[ $? == 0 ]] || fail "the very long request should have been approved (exit 0)"
+
+echo "Request near the limit: the app stays responsive, the watch denies"
+cli test --timeout 120 --command "$NEAR_LIMIT_COMMAND"
+[[ $? == 1 ]] || fail "the request near the limit should have been denied (exit 1)"
 
 trap - EXIT
 wait $XCODEBUILD
