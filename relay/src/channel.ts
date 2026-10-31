@@ -212,8 +212,9 @@ export class ChannelDO extends DurableObject<Env> {
   }
 
   private async push(meta: Meta, record: RequestRecord): Promise<boolean> {
-    const config = apnsConfig(this.env);
-    if (!config || !meta.apnsToken || !meta.apnsEnv) return false;
+    if (!meta.apnsToken || !meta.apnsEnv) return false;
+    const config = apnsConfig(this.env, meta.apnsEnv);
+    if (!config) return false;
     const result = await sendPush(config, { token: meta.apnsToken, env: meta.apnsEnv }, record);
     if (result.dead) await this.saveMeta({ ...meta, apnsToken: null, apnsEnv: null });
     return result.sent;

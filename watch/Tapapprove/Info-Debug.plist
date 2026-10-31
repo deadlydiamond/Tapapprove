@@ -28,7 +28,7 @@
 		<true/>
 	</dict>
 	<key>TapapproveAppBundleID</key>
-	<string>$(TAPAPPROVE_BUNDLE_ID)</string>
+	<string>$(TAPAPPROVE_WATCH_BUNDLE_ID)</string>
 	<key>TapapproveRelayURL</key>
 	<string>$(TAPAPPROVE_RELAY_URL)</string>
 	<key>WKApplication</key>

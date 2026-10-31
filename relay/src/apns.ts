@@ -6,6 +6,10 @@ export interface ApnsEnv {
   APNS_KEY_ID?: string;
   APNS_TEAM_ID?: string;
   APNS_TOPIC?: string;
+  // A key limited to one app works in one environment only, so production can have its own.
+  // Without these, APNS_KEY_P8 serves both.
+  APNS_PRODUCTION_KEY_P8?: string;
+  APNS_PRODUCTION_KEY_ID?: string;
 }
 
 export interface ApnsConfig {
@@ -38,8 +42,11 @@ const MAX_PREVIEW = 3000;
 // APNs refuses tokens older than an hour and rate limits new ones, so reuse for 50 minutes.
 const TOKEN_LIFETIME_MS = 50 * 60 * 1000;
 
-export function apnsConfig(env: ApnsEnv): ApnsConfig | null {
-  const { APNS_KEY_P8: keyP8, APNS_KEY_ID: keyId, APNS_TEAM_ID: teamId, APNS_TOPIC: topic } = env;
+export function apnsConfig(env: ApnsEnv, deviceEnv: DeviceEnv = 'sandbox'): ApnsConfig | null {
+  const useProduction = deviceEnv === 'production' && env.APNS_PRODUCTION_KEY_P8 && env.APNS_PRODUCTION_KEY_ID;
+  const keyP8 = useProduction ? env.APNS_PRODUCTION_KEY_P8 : env.APNS_KEY_P8;
+  const keyId = useProduction ? env.APNS_PRODUCTION_KEY_ID : env.APNS_KEY_ID;
+  const { APNS_TEAM_ID: teamId, APNS_TOPIC: topic } = env;
   return keyP8 && keyId && teamId && topic ? { keyP8, keyId, teamId, topic } : null;
 }
 
@@ -72,13 +79,14 @@ export async function buildJwt(config: ApnsConfig, issuedAtSeconds: number): Pro
   return `${unsigned}.${base64url(new Uint8Array(signature))}`;
 }
 
-let cachedToken: { keyId: string; jwt: string; issuedAt: number } | null = null;
+const cachedTokens = new Map<string, { jwt: string; issuedAt: number }>();
 
 async function providerToken(config: ApnsConfig, now: number): Promise<string> {
-  const age = cachedToken ? now - cachedToken.issuedAt : -1;
-  if (cachedToken?.keyId === config.keyId && age >= 0 && age < TOKEN_LIFETIME_MS) return cachedToken.jwt;
+  const cached = cachedTokens.get(config.keyId);
+  const age = cached ? now - cached.issuedAt : -1;
+  if (cached && age >= 0 && age < TOKEN_LIFETIME_MS) return cached.jwt;
   const jwt = await buildJwt(config, Math.floor(now / 1000));
-  cachedToken = { keyId: config.keyId, jwt, issuedAt: now };
+  cachedTokens.set(config.keyId, { jwt, issuedAt: now });
   return jwt;
 }
 

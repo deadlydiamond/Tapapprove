@@ -8,7 +8,7 @@ compatibility_date = "2026-09-01"
 
 [vars]
 # Your watch app's bundle ID.
-APNS_TOPIC = "com.example.tapapprove"
+APNS_TOPIC = "com.example.tapapprove.watchkitapp"
 
 # Holds each pairing: its tokens, device token and pending requests.
 [[durable_objects.bindings]]

@@ -4,7 +4,7 @@
 <dict>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)$(TAPAPPROVE_BUNDLE_ID)</string>
+		<string>$(AppIdentifierPrefix)$(TAPAPPROVE_WATCH_BUNDLE_ID)</string>
 	</array>
 </dict>
 </plist>

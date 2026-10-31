@@ -3,6 +3,9 @@
 
 DEVELOPMENT_TEAM =
 TAPAPPROVE_BUNDLE_ID = com.example.tapapprove
+// App Store Connect knows the app by the first. The second is the one on the watch, and the
+// topic its notifications use. Apple needs the second to start with the first.
+TAPAPPROVE_WATCH_BUNDLE_ID = $(TAPAPPROVE_BUNDLE_ID).watchkitapp
 TAPAPPROVE_ENTITLEMENTS = Tapapprove/Tapapprove.entitlements
 TAPAPPROVE_RELAY_URL =
 

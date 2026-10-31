@@ -47,7 +47,7 @@ npx wrangler login
 npx wrangler kv namespace create PAIR_CODES
 ```
 
-In `wrangler.local.toml`, put the printed id under `PAIR_CODES`, and set `APNS_TOPIC` to the bundle ID you will use in step 2. Git ignores this file. Then:
+In `wrangler.local.toml`, put the printed id under `PAIR_CODES`, and set `APNS_TOPIC` to the bundle ID you will use in step 2 followed by `.watchkitapp`, which is the ID of the app on the watch. Git ignores this file. Then:
 
 ```sh
 npx wrangler deploy -c wrangler.local.toml   # prints your workers.dev URL
@@ -81,6 +81,8 @@ npx wrangler secret put APNS_KEY_P8 -c wrangler.local.toml < AuthKey_XXXXXXXXXX.
 npx wrangler secret put APNS_KEY_ID -c wrangler.local.toml
 npx wrangler secret put APNS_TEAM_ID -c wrangler.local.toml
 ```
+
+An APNs key limited to one app works in one environment only. For a Release build, add a Production key as `APNS_PRODUCTION_KEY_P8` and `APNS_PRODUCTION_KEY_ID`. Without those, the first key serves both, which needs a key created for Sandbox & Production.
 
 ### 4. Pair
 

@@ -28,6 +28,30 @@ test('no push config when any secret is missing, so a relay without APNs still w
   }
 });
 
+const WITH_PRODUCTION = { ...ENV, APNS_PRODUCTION_KEY_P8: 'production-key', APNS_PRODUCTION_KEY_ID: 'PROD123456' };
+
+test('a key limited to one app works in one environment, so production can have its own', () => {
+  assert.equal(apnsConfig(WITH_PRODUCTION, 'production').keyId, 'PROD123456');
+  assert.equal(apnsConfig(WITH_PRODUCTION, 'production').keyP8, 'production-key');
+  assert.equal(apnsConfig(WITH_PRODUCTION, 'sandbox').keyId, 'KEY1234567');
+});
+
+test('one key serves both environments when no production key is set', () => {
+  assert.equal(apnsConfig(ENV, 'production').keyId, 'KEY1234567');
+  assert.equal(apnsConfig(ENV, 'sandbox').keyId, 'KEY1234567');
+});
+
+test('half a production key is not used', () => {
+  assert.equal(apnsConfig({ ...ENV, APNS_PRODUCTION_KEY_P8: 'production-key' }, 'production').keyId, 'KEY1234567');
+  assert.equal(apnsConfig({ ...ENV, APNS_PRODUCTION_KEY_ID: 'PROD123456' }, 'production').keyId, 'KEY1234567');
+});
+
+test('a production key alone sends nothing to a sandbox device', () => {
+  const productionOnly = { ...WITH_PRODUCTION, APNS_KEY_P8: undefined, APNS_KEY_ID: undefined };
+  assert.equal(apnsConfig(productionOnly, 'sandbox'), null);
+  assert.equal(apnsConfig(productionOnly, 'production').keyId, 'PROD123456');
+});
+
 test('the JWT is what APNs requires, and its signature verifies', async () => {
   const jwt = await buildJwt(CONFIG, 1_800_000_000);
   const [header, claims, signature] = jwt.split('.');
@@ -101,6 +125,17 @@ test('the signing token is reused, because APNs rejects frequent new ones', asyn
   const tokens = calls.map((call) => call.init.headers.authorization);
   assert.equal(tokens[0], tokens[1]);
   assert.notEqual(tokens[1], tokens[2]);
+});
+
+test('two keys in turn each keep their own signing token, or every push would make a new one', async () => {
+  const { calls, fetchFn } = fakeApns();
+  const other = { ...CONFIG, keyId: 'OTHER12345' };
+  const now = 1_950_000_000_000;
+  for (const config of [CONFIG, other, CONFIG, other]) await sendPush(config, DEVICE, SUMMARY, { fetchFn, now });
+  const tokens = calls.map((call) => call.init.headers.authorization);
+  assert.notEqual(tokens[0], tokens[1]);
+  assert.equal(tokens[0], tokens[2]);
+  assert.equal(tokens[1], tokens[3]);
 });
 
 for (const [status, reason] of [[410, 'Unregistered'], [400, 'BadDeviceToken']]) {
