@@ -22,11 +22,27 @@ When Claude Code wants to ask for permission, the hook seals the request, sends 
 
 Claude Code's Remote Control can also notify a watch. When tested in October 2026, those notifications offered Deny, Deny with comment and Dismiss, with no Approve, and needed a Remote Control session. Tapapprove adds Yes and does not use Remote Control.
 
-## Status
+## Get started
 
-Early, and for people comfortable building from source. There is no App Store or TestFlight build yet, so you deploy your own relay and install your own copy of the watch app.
+You need an Apple Watch on watchOS 10 or later, and Claude Code with Node.js 20 or later on your computer. So far it has only been tested on a Mac.
 
-You need:
+1. Install [Tapapprove from the App Store](https://apps.apple.com/app/id6829118126) on your watch and open it. It shows a 20-character code, valid for 10 minutes and for one use.
+2. On your computer, run:
+
+   ```sh
+   npx tapapprove pair <code>
+   npx tapapprove test
+   ```
+
+3. Answer the test request on your wrist. Claude Code sessions you start from now on can reach your watch.
+
+**If the watch stays quiet later:** it only buzzes when Claude Code would have asked you. In `auto` mode or with a broad allow list, Claude Code rarely asks, so add `ask` rules for what you want on your wrist. See [When the watch buzzes](#when-the-watch-buzzes).
+
+The app and the hosted relay are free for now, with no account. The relay can neither read a request nor approve one: see [Safety rules](#safety-rules).
+
+## Build it yourself
+
+This is for running your own relay and your own copy of the watch app. You need:
 
 - a Mac with Xcode, [XcodeGen](https://github.com/yonaskolb/XcodeGen) and Node.js 20 or later
 - an Apple Watch on watchOS 10 or later, and its iPhone
@@ -34,8 +50,6 @@ You need:
 - for notifications while the app is closed, a paid Apple Developer Program membership
 
 With a free Apple account, requests appear only while the app is open, and the install lasts 7 days.
-
-## Set it up
 
 ### 1. Deploy the relay
 
